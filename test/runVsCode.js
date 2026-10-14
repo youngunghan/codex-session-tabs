@@ -16,7 +16,16 @@ function findCodexExtension() {
   ];
   for (const root of roots) {
     if (!fs.existsSync(root)) continue;
-    const match = fs.readdirSync(root).filter(name => name.startsWith('openai.chatgpt-')).sort().at(-1);
+    const host = { win32: 'win32', darwin: 'darwin', linux: 'linux' }[process.platform];
+    const builds = fs.readdirSync(root).filter(name => name.startsWith('openai.chatgpt-'));
+    const candidates = builds.filter(name => name.includes(`-${host}-`));
+    const match = (candidates.length ? candidates : builds).sort((a, b) => {
+      const version = name => (name.match(/^openai\.chatgpt-(\d+)\.(\d+)\.(\d+)/) || []).slice(1).map(Number);
+      const left = version(a);
+      const right = version(b);
+      for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return (left[i] || 0) - (right[i] || 0);
+      return a.localeCompare(b);
+    }).at(-1);
     if (match) return path.join(root, match);
   }
   return undefined;

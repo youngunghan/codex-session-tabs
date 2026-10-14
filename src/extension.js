@@ -9,6 +9,7 @@ const CODEX_EXTENSION_ID = 'openai.chatgpt';
 const EDITOR_ID = 'chatgpt.conversationEditor';
 const NEW_PANEL_PATH = '/extension/panel/new';
 const COMMAND_ID = 'codexSessionTabs.newTab';
+const verifiedBundles = new Map();
 
 async function checkCodexEditor() {
   const extension = vscode.extensions.getExtension(CODEX_EXTENSION_ID);
@@ -20,23 +21,36 @@ async function checkCodexEditor() {
   }
 
   const main = extension.packageJSON?.main;
-  if (typeof main !== 'string' || !main.startsWith('./')) {
+  if (typeof main !== 'string' || !main || path.isAbsolute(main)) {
     throw new Error('Cannot locate the installed Codex extension entry point.');
   }
   const mainPath = path.resolve(extension.extensionPath, main);
   const relative = path.relative(extension.extensionPath, mainPath);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error('Codex extension entry point is outside its installation folder.');
   }
-  let bundle;
-  try {
-    bundle = await fs.readFile(mainPath, 'utf8');
-  } catch (error) {
-    throw new Error(`Cannot read the installed Codex extension entry point: ${error.message}`);
+  const cacheKey = `${extension.extensionPath}|${extension.packageJSON?.version || ''}|${main}`;
+  if (!verifiedBundles.has(cacheKey)) {
+    const verification = (async () => {
+      let bundle;
+      try {
+        try {
+          bundle = await fs.readFile(mainPath, 'utf8');
+        } catch (error) {
+          if (error.code !== 'ENOENT' || path.extname(mainPath)) throw error;
+          bundle = await fs.readFile(`${mainPath}.js`, 'utf8');
+        }
+      } catch (error) {
+        throw new Error(`Cannot read the installed Codex extension entry point: ${error.message}`);
+      }
+      if (!bundle.includes(NEW_PANEL_PATH)) {
+        throw new Error(`Installed Codex ${extension.packageJSON?.version || ''} does not contain ${NEW_PANEL_PATH}.`);
+      }
+    })();
+    verifiedBundles.set(cacheKey, verification);
+    verification.catch(() => verifiedBundles.delete(cacheKey));
   }
-  if (!bundle.includes(NEW_PANEL_PATH)) {
-    throw new Error(`Installed Codex ${extension.packageJSON?.version || ''} does not contain ${NEW_PANEL_PATH}.`);
-  }
+  await verifiedBundles.get(cacheKey);
   return extension;
 }
 

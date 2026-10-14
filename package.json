@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "yuhan",
   "description": "Open the official Codex chat in multiple independent editor tabs.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "local-development",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/yuhan-codex-session-tabs.git" },
   "license": "MIT",
@@ -10,9 +10,9 @@
   "categories": ["Other", "Chat"],
   "keywords": ["codex", "tabs", "chat", "sessions"],
   "main": "./src/extension.js",
-  "extensionKind": ["ui", "workspace"],
+  "extensionKind": ["workspace"],
   "extensionDependencies": ["openai.chatgpt"],
-  "activationEvents": ["onCommand:codexSessionTabs.newTab"],
+  "activationEvents": ["onStartupFinished", "onCommand:codexSessionTabs.newTab"],
   "contributes": {
     "commands": [{
       "command": "codexSessionTabs.newTab",

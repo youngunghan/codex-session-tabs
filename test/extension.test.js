@@ -31,14 +31,17 @@ test('new panels have unique document identities on the official route', () => {
 test('checks the installed Codex custom editor and route', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yuhan-codex-'));
   try {
-    await fs.writeFile(path.join(root, 'extension.js'), 'const route = "/extension/panel/new";');
+    await fs.writeFile(path.join(root, 'extension.js'), 'const route = "/old/path";');
+    let main = 'extension.js';
     fakeVscode.extensions.getExtension = () => ({
       extensionPath: root,
-      packageJSON: { main: './extension.js', contributes: { customEditors: [{ viewType: 'chatgpt.conversationEditor' }] } }
+      packageJSON: { main, contributes: { customEditors: [{ viewType: 'chatgpt.conversationEditor' }] } }
     });
-    await extension.checkCodexEditor();
-    await fs.writeFile(path.join(root, 'extension.js'), 'const route = "/old/path";');
     await assert.rejects(extension.checkCodexEditor(), /does not contain/);
+    await fs.writeFile(path.join(root, 'extension.js'), 'const route = "/extension/panel/new";');
+    await extension.checkCodexEditor();
+    main = 'extension';
+    await extension.checkCodexEditor();
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
