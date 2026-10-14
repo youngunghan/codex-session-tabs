@@ -56,7 +56,12 @@ async function main() {
     ...options,
     extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath],
     extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
-    launchArgs: [path.resolve(__dirname, '..'), '--disable-extensions', '--skip-welcome'],
+    launchArgs: [
+      path.resolve(__dirname, '..'),
+      '--disable-extensions',
+      '--skip-welcome',
+      ...(process.platform === 'darwin' ? [`--user-data-dir=/tmp/yuhan-vscode-${process.pid}`] : [])
+    ],
     extensionTestsEnv: { CODEX_TABS_TEST: '1' }
   });
 }
