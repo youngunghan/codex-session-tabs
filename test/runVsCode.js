@@ -35,21 +35,29 @@ function findCodexDependencies(codexPath) {
   const codexPackage = JSON.parse(fs.readFileSync(path.join(codexPath, 'package.json'), 'utf8'));
   const root = path.dirname(codexPath);
   return (codexPackage.extensionDependencies || []).map(id => {
-    const candidates = fs.readdirSync(root)
-      .filter(name => name.startsWith(`${id}-`))
-      .map(name => path.join(root, name))
-      .filter(candidate => {
-        try {
-          return JSON.parse(fs.readFileSync(path.join(candidate, 'package.json'), 'utf8')).version === codexPackage.version;
-        } catch {
-          return false;
+    const candidates = fs.readdirSync(root).map(candidate => path.join(root, candidate)).flatMap(candidate => {
+      try {
+        const dependency = JSON.parse(fs.readFileSync(path.join(candidate, 'package.json'), 'utf8'));
+        const dependencyId = `${dependency.publisher}.${dependency.name}`;
+        return dependencyId.toLowerCase() === id.toLowerCase() ? [{ path: candidate, version: dependency.version }] : [];
+      } catch {
+        return [];
+      }
+    });
+    candidates.sort((left, right) => {
+      const compareVersions = (a, b) => {
+        const av = String(a || '').split('.').map(part => Number.parseInt(part, 10) || 0);
+        const bv = String(b || '').split('.').map(part => Number.parseInt(part, 10) || 0);
+        for (let index = 0; index < Math.max(av.length, bv.length); index++) {
+          if ((av[index] || 0) !== (bv[index] || 0)) return (av[index] || 0) - (bv[index] || 0);
         }
-      });
-    if (candidates.length !== 1) {
-      throw new Error(`Expected one installed ${id} dependency matching Codex ${codexPackage.version}, found ${candidates.length}.`);
-    }
-    return candidates[0];
-  });
+        return 0;
+      };
+      return compareVersions(left.version, right.version);
+    });
+    // A dependency already bundled with VS Code need not be loaded from the extension root.
+    return candidates.length ? candidates.at(-1).path : undefined;
+  }).filter(Boolean);
 }
 
 function resolveMacExecutable(expected) {

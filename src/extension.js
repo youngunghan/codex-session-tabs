@@ -98,10 +98,7 @@ class HistoryTabReplacement {
   }
 
   snapshotUris() {
-    const groups = this.api.window.tabGroups.all || [];
-    const activeGroup = this.api.window.tabGroups.activeTabGroup;
-    const allGroups = activeGroup && !groups.includes(activeGroup) ? [...groups, activeGroup] : groups;
-    return openCodexTabs(allGroups, this.api).map(entry => entry.uri);
+    return openCodexTabs(this.groups(), this.api).map(entry => entry.uri);
   }
 
   active() {
@@ -268,7 +265,8 @@ class HistoryTabReplacement {
               this.managedUris.delete(pending.historyUri);
               return;
             }
-            await this.api.window.tabGroups.close(sources[0].tab, true);
+            const closed = await this.api.window.tabGroups.close(sources[0].tab, true);
+            if (closed === false) this.managedUris.delete(pending.historyUri);
           } catch (error) {
             this.managedUris.delete(pending.historyUri);
             console.error('Codex Sessions: failed to replace the new tab', error);

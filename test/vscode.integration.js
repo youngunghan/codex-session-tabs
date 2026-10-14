@@ -72,17 +72,24 @@ async function run() {
 
   const previewSessionUris = ['preview-one', 'preview-two'].map(id =>
     vscode.Uri.parse(`openai-codex://route/local/${id}`));
-  await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[0], 'chatgpt.conversationEditor', {
-    preview: true, preserveFocus: false
-  });
-  await waitForPinnedSessions([previewSessionUris[0]]);
-  await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[1], 'chatgpt.conversationEditor', {
-    preview: true, preserveFocus: false
-  });
-  const previewSessionTabs = await waitForPinnedSessions(previewSessionUris);
-  tabs = await waitForTabs(before.length + 4);
-  assert.equal(previewSessionTabs.length, 2, 'opening a second history preview must retain the first session tab');
-  await vscode.window.tabGroups.close(previewSessionTabs);
+  const previewConfig = vscode.workspace.getConfiguration('codexSessionTabs');
+  const previousPreviewSetting = previewConfig.inspect('replaceNewTabOnHistoryOpen').globalValue;
+  await previewConfig.update('replaceNewTabOnHistoryOpen', false, vscode.ConfigurationTarget.Global);
+  try {
+    await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[0], 'chatgpt.conversationEditor', {
+      preview: true, preserveFocus: false
+    });
+    await waitForPinnedSessions([previewSessionUris[0]]);
+    await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[1], 'chatgpt.conversationEditor', {
+      preview: true, preserveFocus: false
+    });
+    const previewSessionTabs = await waitForPinnedSessions(previewSessionUris);
+    tabs = await waitForTabs(before.length + 4);
+    assert.equal(previewSessionTabs.length, 2, 'opening a second history preview must retain the first session tab');
+    await vscode.window.tabGroups.close(previewSessionTabs);
+  } finally {
+    await previewConfig.update('replaceNewTabOnHistoryOpen', previousPreviewSetting, vscode.ConfigurationTarget.Global);
+  }
 
   await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
   assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.input.uri.toString(), first.toString());
@@ -116,7 +123,8 @@ async function run() {
       const retainedFlowTabs = codexTabs().filter(tab => flowUris.has(tab.input.uri.toString()));
       assert.equal(retainedFlowTabs.length, 2,
         'one selected history URI and the independent managed URI should remain across the three tracked inputs');
-      console.log(`CODEX_KEY_RESULT inputs=${flowUris.size} retained=${retainedFlowTabs.length}`);
+      // Count identities only; never emit saved conversation URIs or session IDs.
+      console.log(`CODEX_KEY_RESULT keys=${flowUris.size} liveTabs=${retainedFlowTabs.length}`);
       if (process.env.CODEX_EXPECT_SESSION_TITLE === '1') {
         for (let attempt = 0; attempt < 50 && defaultHistoryTab.label === 'Codex'; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -151,6 +159,13 @@ async function run() {
       await config.update('replaceNewTabOnHistoryOpen', false, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand('codexSessionTabs.focusTab', second.toString());
       await vscode.commands.executeCommand('vscode.open', existingSessionUri);
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const opened = codexTabs();
+        if (opened.some(tab => tab.input.uri.toString() === second.toString()) &&
+            opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString())) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      await new Promise(resolve => setTimeout(resolve, 650));
       assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
         'a persisted false preference should retain the active new tab');
       const safeHistoryTab = codexTabs().find(tab => tab.input.uri.toString() === existingSessionUri.toString());
@@ -160,6 +175,13 @@ async function run() {
       await config.update('replaceNewTabOnHistoryOpen', true, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand('codexSessionTabs.focusTab', second.toString());
       await vscode.commands.executeCommand('codexSessionTabs.reopenSession', { uri: existingSessionUri.toString() });
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const opened = codexTabs();
+        if (opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString()) &&
+            opened.some(tab => tab.input.uri.toString() === second.toString())) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      await new Promise(resolve => setTimeout(resolve, 650));
       assert.ok(codexTabs().some(tab => tab.input.uri.toString() === existingSessionUri.toString()),
         'recent-session context action should reopen the existing conversation tab');
       assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),

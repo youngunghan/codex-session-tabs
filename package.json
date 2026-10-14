@@ -19,7 +19,7 @@
         "codexSessionTabs.replaceNewTabOnHistoryOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Replace the active tab created by Codex Session Tabs with saved conversations selected inside its Codex history. The official editor opens a history tab, which this extension pins and uses to replace only that managed tab. The replaced tab and unsent input may be lost. Set false to keep both tabs."
+          "description": "Replace the active tab created by Codex Session Tabs when a saved Codex conversation opens in it. Detection is inferred from editor tab events, so any command or extension that opens a saved conversation URI while a managed tab is active may trigger replacement; Codex Sessions: Reopen Conversation is suppressed. This defaults to true in 0.5.0. The replaced tab and unsent input may be lost. Set false to keep both tabs."
         }
       }
     },

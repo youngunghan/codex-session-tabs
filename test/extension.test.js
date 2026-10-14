@@ -285,7 +285,46 @@ test('a same-event official source disposal adopts history without closing twice
   assert.deepEqual(group.tabs, [history, nextHistory]);
 });
 
-test('a preview history tab opened in the background is not treated as user selection', async () => {
+test('fresh Cursor wrappers preserve source-disposal lineage without duplicating the active group', async () => {
+  const source = new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor');
+  const history = new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/cursor-disposed' }, 'chatgpt.conversationEditor');
+  const nextHistory = new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/cursor-next' }, 'chatgpt.conversationEditor');
+  let inputs = [source];
+  let activeInput = source;
+  const tab = input => ({ input });
+  const group = () => ({ viewColumn: 1, tabs: inputs.map(tab), activeTab: tab(activeInput) });
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      get all() { return [group()]; },
+      get activeTabGroup() { return group(); },
+      close: async target => {
+        closed.push(target.input.uri.toString());
+        inputs = inputs.filter(input => input.uri.toString() !== target.input.uri.toString());
+      }
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  assert.deepEqual(manager.knownUris, [source.uri.toString()],
+    'the same active group exposed through fresh wrappers must be counted once');
+
+  inputs = [history];
+  activeInput = history;
+  await manager.onTabsChanged({ opened: [tab(history)], closed: [tab(source)], changed: [] });
+  assert.deepEqual(closed, [], 'the source already disposed by the host must not be closed twice');
+
+  inputs = [history, nextHistory];
+  activeInput = nextHistory;
+  await manager.onTabsChanged({ opened: [tab(nextHistory)], closed: [], changed: [] });
+  assert.deepEqual(closed, [history.uri.toString()],
+    'the URI lineage must transfer despite new Tab wrappers for the source and target');
+});
+
+test('a background preview is not selected until the user activates its history tab', async () => {
   const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
   const history = { input: new fakeVscode.TabInputCustom(
     { scheme: 'openai-codex', authority: 'route', path: '/local/background' }, 'chatgpt.conversationEditor'), isPreview: true };
@@ -371,6 +410,28 @@ test('a failed preview pin leaves the managed source tab open', async () => {
   }
   assert.deepEqual(closed, [], 'the source must not close unless the target is pinned');
   assert.ok(group.tabs.includes(managed));
+});
+
+test('a rejected tab close does not adopt the history URI as managed lineage', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/close-rejected' }, 'chatgpt.conversationEditor') };
+  const group = { tabs: [managed], activeTab: managed };
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      activeTabGroup: group,
+      close: async () => false
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  group.tabs.push(history);
+  group.activeTab = history;
+  await manager.onTabsChanged({ opened: [history], closed: [], changed: [] });
+  assert.ok(group.tabs.includes(managed), 'a false close result should leave the source tab open');
+  assert.equal(manager.managedUris.has(history.input.uri.toString()), false,
+    'a history URI is adopted only if its originating source was closed');
 });
 
 test('an active custom editor is pinned with keepEditor before replacement', async () => {
@@ -527,12 +588,12 @@ test('preview history promotion preserves replacement state across reentrant tab
   assert.equal(manager.previousActive.tab, history, 'reentrant events should leave history as the active tab');
 });
 
-test('preview history promotion skips tabs without a current editor group', async () => {
+test('preview history promotion skips an active target absent from all editor groups', async () => {
   const makeTab = uri => ({ input: new fakeVscode.TabInputCustom(uri, 'chatgpt.conversationEditor'), isPreview: false });
   const history = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/history-id' });
   history.isPreview = true;
   const other = makeTab(extension.newPanelUri());
-  const staleGroup = { tabs: [], activeTab: other, viewColumn: 1 };
+  const staleGroup = { tabs: [other], activeTab: history, viewColumn: 1 };
   let opened = 0;
   const api = {
     TabInputCustom: fakeVscode.TabInputCustom,
@@ -544,7 +605,7 @@ test('preview history promotion skips tabs without a current editor group', asyn
   };
   const manager = new extension.HistoryTabReplacement(api);
   await manager.onTabsChanged({ opened: [history], changed: [], closed: [] });
-  assert.equal(opened, 0, 'a stale or missing tab group must not fall back to the active group');
+  assert.equal(opened, 0, 'an active preview absent from all groups must not fall back to the active group');
 });
 
 test('history navigation does not close an unrelated Codex tab', async () => {
