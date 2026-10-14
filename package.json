@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
   "description": "Open and organize official Codex chats in editor tabs.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "youngunghan",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/codex-session-tabs.git" },
   "license": "MIT",
@@ -13,6 +13,16 @@
   "extensionKind": ["workspace"],
   "activationEvents": ["onStartupFinished", "onView:codexSessionTabs.sessions", "onCommand:codexSessionTabs.newTab"],
   "contributes": {
+    "configuration": {
+      "title": "Codex Session Tabs",
+      "properties": {
+        "codexSessionTabs.replaceNewTabOnHistoryOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Close the active new tab created by this extension when a saved Codex conversation opens. Opt in only if losing an active conversation or unsent input is acceptable; the closed tab cannot be restored from Recently closed."
+        }
+      }
+    },
     "commands": [
       { "command": "codexSessionTabs.newTab", "title": "Codex: New Codex Tab", "icon": "$(add)" },
       { "command": "codexSessionTabs.focusTab", "title": "Codex Sessions: Focus Tab" },
@@ -23,6 +33,7 @@
       "explorer": [{ "id": "codexSessionTabs.sessions", "name": "Codex Sessions" }]
     },
     "menus": {
+      "editor/title": [{ "command": "codexSessionTabs.newTab", "when": "resourceScheme == openai-codex", "group": "navigation@1" }],
       "view/title": [{ "command": "codexSessionTabs.newTab", "when": "view == codexSessionTabs.sessions", "group": "navigation@1" }],
       "view/item/context": [
         { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "inline@1" },

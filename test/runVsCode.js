@@ -61,18 +61,25 @@ async function main() {
   if (!options.vscodeExecutablePath && process.platform === 'darwin') {
     options.vscodeExecutablePath = resolveMacExecutable(await downloadAndUnzipVSCode(options));
   }
-  await runTests({
-    ...options,
-    extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath],
-    extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
-    launchArgs: [
-      path.resolve(__dirname, '..'),
-      '--disable-extensions',
-      '--skip-welcome',
-      ...(process.platform === 'darwin' ? [`--user-data-dir=/tmp/yuhan-vscode-${process.pid}`] : [])
-    ],
-    extensionTestsEnv: { CODEX_TABS_TEST: '1' }
-  });
+  const markerDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tabs-test-'));
+  const markerPath = path.join(markerDirectory, 'passed');
+  try {
+    await runTests({
+      ...options,
+      extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath],
+      extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
+      launchArgs: [
+        path.resolve(__dirname, '..'),
+        '--disable-extensions',
+        '--skip-welcome',
+        ...(process.platform === 'darwin' ? [`--user-data-dir=/tmp/yuhan-vscode-${process.pid}`] : [])
+      ],
+      extensionTestsEnv: { CODEX_TABS_TEST: '1', CODEX_TABS_TEST_MARKER: markerPath }
+    });
+    if (!fs.existsSync(markerPath)) throw new Error('Integration assertions did not complete. See the extension host output above.');
+  } finally {
+    fs.rmSync(markerDirectory, { recursive: true, force: true });
+  }
 }
 
 main().catch(error => {

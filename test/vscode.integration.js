@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const vscode = require('vscode');
 
 async function run() {
@@ -49,14 +50,43 @@ async function run() {
 
   if (process.env.CODEX_TEST_SESSION_ID) {
     const existingSessionUri = vscode.Uri.parse(`openai-codex://route/local/${process.env.CODEX_TEST_SESSION_ID}`);
-    await vscode.commands.executeCommand('vscode.openWith', existingSessionUri, 'chatgpt.conversationEditor', { preview: false });
+    const config = vscode.workspace.getConfiguration('codexSessionTabs');
+    await config.update('replaceNewTabOnHistoryOpen', false, vscode.ConfigurationTarget.Global);
+    assert.equal(ours.packageJSON.contributes.configuration.properties['codexSessionTabs.replaceNewTabOnHistoryOpen'].default,
+      false, 'safe mode should be the packaged default');
+    await vscode.commands.executeCommand('vscode.open', existingSessionUri, { preview: false });
+    assert.ok(codexTabs().some(tab => tab.input.uri.toString() === first.toString()),
+      'opening history in safe mode should retain the active new tab');
+    const safeHistoryTab = codexTabs().find(tab => tab.input.uri.toString() === existingSessionUri.toString());
+    assert.ok(safeHistoryTab, 'history should open as a separate tab in safe mode');
+    await vscode.window.tabGroups.close(safeHistoryTab);
+    await config.update('replaceNewTabOnHistoryOpen', true, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
+    await vscode.commands.executeCommand('vscode.open', existingSessionUri, { preview: false });
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const opened = codexTabs();
+      if (opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString()) &&
+          !opened.some(tab => tab.input.uri.toString() === first.toString())) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     const sessionTab = codexTabs().find(tab => tab.input.uri.toString() === existingSessionUri.toString());
     assert.ok(sessionTab, 'existing Codex session should open');
+    assert.ok(!codexTabs().some(tab => tab.input.uri.toString() === first.toString()),
+      'opening history should replace the active managed new tab');
+    for (let attempt = 0; attempt < 50 && sessionTab.label === 'Codex'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.notEqual(sessionTab.label, 'Codex', 'an existing conversation should show its summary as the tab title');
+    assert.ok(sessionTab.label.length > 3, 'the conversation title should be descriptive');
     await vscode.window.tabGroups.close(sessionTab);
+    await vscode.commands.executeCommand('codexSessionTabs.focusTab', second.toString());
     await vscode.commands.executeCommand('codexSessionTabs.reopenSession', { uri: existingSessionUri.toString() });
     assert.ok(codexTabs().some(tab => tab.input.uri.toString() === existingSessionUri.toString()),
       'recent-session context action should reopen the existing conversation tab');
+    assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
+      'explicitly reopening a conversation should not close the active new tab');
   }
+  if (process.env.CODEX_TABS_TEST_MARKER) fs.writeFileSync(process.env.CODEX_TABS_TEST_MARKER, 'passed');
 }
 
 module.exports = { run };

@@ -2,6 +2,7 @@
 
 const EDITOR_ID = 'chatgpt.conversationEditor';
 const RECENT_LIMIT = 20;
+const MANAGED_NEW_FRAGMENT = 'codex-session-tabs-';
 
 function isCodexTab(tab, vscode) {
   const input = tab?.input;
@@ -23,8 +24,15 @@ function isResumableUri(uri) {
     /^\/(local|remote)\/[^/]+$/.test(uri.path);
 }
 
+function isManagedNewUri(uri) {
+  return uri?.scheme === 'openai-codex' &&
+    uri.authority === 'route' &&
+    uri.path === '/extension/panel/new' &&
+    uri.fragment?.startsWith(MANAGED_NEW_FRAGMENT);
+}
+
 function rememberClosed(recent, entry) {
   return [entry, ...recent.filter(item => item.uri !== entry.uri)].slice(0, RECENT_LIMIT);
 }
 
-module.exports = { EDITOR_ID, isCodexTab, openCodexTabs, isResumableUri, rememberClosed };
+module.exports = { EDITOR_ID, MANAGED_NEW_FRAGMENT, isCodexTab, openCodexTabs, isResumableUri, isManagedNewUri, rememberClosed };

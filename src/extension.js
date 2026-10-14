@@ -4,13 +4,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const vscode = require('vscode');
-const { EDITOR_ID, isCodexTab, openCodexTabs, isResumableUri, rememberClosed } = require('./sessions');
+const { EDITOR_ID, MANAGED_NEW_FRAGMENT, isCodexTab, openCodexTabs, isResumableUri, isManagedNewUri, rememberClosed } = require('./sessions');
 
 const CODEX_EXTENSION_ID = 'openai.chatgpt';
 const NEW_PANEL_PATH = '/extension/panel/new';
 const COMMAND_ID = 'codexSessionTabs.newTab';
 const ALIASES_KEY = 'codexSessionTabs.aliases';
 const RECENT_KEY = 'codexSessionTabs.recent';
+const REPLACEMENT_WINDOW_MS = 1000;
 const verifiedBundles = new Map();
 
 async function checkCodexEditor(requireNewPanelRoute = true) {
@@ -65,7 +66,7 @@ function newPanelUri() {
     scheme: 'openai-codex',
     authority: 'route',
     path: NEW_PANEL_PATH,
-    fragment: crypto.randomUUID()
+    fragment: `${MANAGED_NEW_FRAGMENT}${crypto.randomUUID()}`
   });
 }
 
@@ -78,6 +79,74 @@ async function openNewTab() {
     preserveFocus: false
   });
   return uri;
+}
+
+class HistoryTabReplacement {
+  constructor(api = vscode) {
+    this.api = api;
+    this.previousActive = this.active();
+    this.pending = undefined;
+    this.suppressed = new Map();
+  }
+
+  active() {
+    const group = this.api.window.tabGroups.activeTabGroup;
+    return group?.activeTab ? { group, tab: group.activeTab } : undefined;
+  }
+
+  syncActive() {
+    this.previousActive = this.active();
+  }
+
+  suppress(uri) {
+    this.unsuppress(uri);
+    const timeout = setTimeout(() => this.unsuppress(uri), 10000);
+    timeout.unref?.();
+    this.suppressed.set(uri, timeout);
+  }
+
+  unsuppress(uri) {
+    const timeout = this.suppressed.get(uri);
+    if (timeout) clearTimeout(timeout);
+    this.suppressed.delete(uri);
+  }
+
+  async onTabsChanged(event) {
+    const previous = this.previousActive;
+    const current = this.active();
+    const openedHistory = event.opened.find(tab =>
+      isCodexTab(tab, this.api) && isResumableUri(tab.input.uri));
+    const historyUri = openedHistory?.input.uri.toString();
+    const suppressed = historyUri && this.suppressed.has(historyUri);
+    if (suppressed) this.unsuppress(historyUri);
+    const enabled = this.api.workspace?.getConfiguration?.('codexSessionTabs')
+      ?.get('replaceNewTabOnHistoryOpen', false) ?? false;
+    if (enabled && !suppressed && openedHistory && previous &&
+        isCodexTab(previous.tab, this.api) && isManagedNewUri(previous.tab.input.uri) &&
+        previous.group.tabs.includes(previous.tab) &&
+        previous.group.tabs.includes(openedHistory) &&
+        (current?.tab === previous.tab || current?.tab === openedHistory)) {
+      this.pending = { original: previous.tab, history: openedHistory, group: previous.group, at: Date.now() };
+    }
+
+    const pending = this.pending;
+    const shouldReplace = pending && current?.tab === pending.history &&
+      current.group === pending.group && pending.group.tabs.includes(pending.original) &&
+      Date.now() - pending.at < REPLACEMENT_WINDOW_MS;
+    this.previousActive = current;
+    if (shouldReplace) {
+      this.pending = undefined;
+      try {
+        await this.api.window.tabGroups.close(pending.original, true);
+      } catch (error) {
+        console.error('Codex Sessions: failed to replace the new tab', error);
+      }
+      this.previousActive = this.active();
+    } else if (pending && (Date.now() - pending.at >= REPLACEMENT_WINDOW_MS ||
+        (current?.tab !== pending.original && current?.tab !== pending.history))) {
+      this.pending = undefined;
+    }
+  }
 }
 
 class SessionTree {
@@ -202,6 +271,7 @@ function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, open));
 
   const sessions = new SessionTree(context);
+  const replacement = new HistoryTabReplacement();
   context.subscriptions.push(sessions);
   context.subscriptions.push(vscode.window.createTreeView('codexSessionTabs.sessions', {
     treeDataProvider: sessions,
@@ -209,8 +279,12 @@ function activate(context) {
   }));
   context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
     void sessions.onTabsChanged(event).catch(error => console.error('Codex Sessions: failed to save tab state', error));
+    void replacement.onTabsChanged(event).catch(error => console.error('Codex Sessions: failed to replace tab', error));
   }));
-  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => sessions.refresh()));
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => {
+    replacement.syncActive();
+    sessions.refresh();
+  }));
 
   context.subscriptions.push(vscode.commands.registerCommand('codexSessionTabs.focusTab', async (uri, viewColumn) => {
     if (!uri) {
@@ -249,9 +323,15 @@ function activate(context) {
       const parsed = vscode.Uri.parse(uri);
       if (!isResumableUri(parsed)) throw new Error('This entry does not have a resumable Codex session URI.');
       await checkCodexEditor(false);
-      await vscode.commands.executeCommand('vscode.openWith', parsed, EDITOR_ID, {
-        viewColumn: vscode.ViewColumn.Active, preview: false, preserveFocus: false
-      });
+      replacement.suppress(parsed.toString());
+      try {
+        await vscode.commands.executeCommand('vscode.openWith', parsed, EDITOR_ID, {
+          viewColumn: vscode.ViewColumn.Active, preview: false, preserveFocus: false
+        });
+      } catch (error) {
+        replacement.unsuppress(parsed.toString());
+        throw error;
+      }
     } catch (error) {
       vscode.window.showErrorMessage(`Codex Sessions: Reopen failed: ${error.message}`);
     }
@@ -265,4 +345,4 @@ function activate(context) {
   context.subscriptions.push(button);
 }
 
-module.exports = { activate, checkCodexEditor, newPanelUri, openNewTab, SessionTree };
+module.exports = { activate, checkCodexEditor, newPanelUri, openNewTab, SessionTree, HistoryTabReplacement };
