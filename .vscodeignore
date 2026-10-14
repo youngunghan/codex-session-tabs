@@ -1,0 +1,9 @@
+.github/**
+test/**
+*.vsix
+node_modules/**
+.git/**
+.gitignore
+.integration.log
+.vscode-test/**
+.compat/**

@@ -1,0 +1,72 @@
+{
+  "name": "yuhan-codex-session-tabs",
+  "displayName": "yuhan",
+  "description": "Open independent Codex conversations in VS Code editor tabs.",
+  "version": "0.1.0",
+  "publisher": "local-development",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Chat"
+  ],
+  "keywords": [
+    "codex",
+    "tabs",
+    "chat",
+    "sessions"
+  ],
+  "main": "./src/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onCommand:codexSessionTabs.newTab",
+    "onCommand:codexSessionTabs.openSession",
+    "onWebviewPanel:codexSessionTabs.chat"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexSessionTabs.newTab",
+        "title": "Codex Session Tabs: New Chat Tab",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codexSessionTabs.openSession",
+        "title": "Codex Session Tabs: Open Saved Chat"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "codexSessionTabs.newTab",
+          "when": "activeWebviewPanelId == codexSessionTabs.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Codex Session Tabs",
+      "properties": {
+        "codexSessionTabs.executablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Absolute path to the Codex CLI. Leave empty to find it on PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:integration": "node test/runVsCode.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0"
+  }
+}
