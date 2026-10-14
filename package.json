@@ -1,64 +1,29 @@
 {
   "name": "yuhan-codex-session-tabs",
   "displayName": "yuhan",
-  "description": "Open independent Codex conversations in VS Code editor tabs.",
-  "version": "0.1.0",
+  "description": "Open the official Codex chat in multiple independent editor tabs.",
+  "version": "0.2.0",
   "publisher": "local-development",
+  "repository": { "type": "git", "url": "https://github.com/youngunghan/yuhan-codex-session-tabs.git" },
   "license": "MIT",
-  "engines": {
-    "vscode": "^1.95.0"
-  },
-  "categories": [
-    "Other",
-    "Chat"
-  ],
-  "keywords": [
-    "codex",
-    "tabs",
-    "chat",
-    "sessions"
-  ],
+  "engines": { "vscode": "^1.96.2" },
+  "categories": ["Other", "Chat"],
+  "keywords": ["codex", "tabs", "chat", "sessions"],
   "main": "./src/extension.js",
-  "extensionKind": [
-    "workspace"
-  ],
-  "activationEvents": [
-    "onCommand:codexSessionTabs.newTab",
-    "onCommand:codexSessionTabs.openSession",
-    "onWebviewPanel:codexSessionTabs.chat"
-  ],
+  "extensionKind": ["ui", "workspace"],
+  "extensionDependencies": ["openai.chatgpt"],
+  "activationEvents": ["onCommand:codexSessionTabs.newTab"],
   "contributes": {
-    "commands": [
-      {
-        "command": "codexSessionTabs.newTab",
-        "title": "Codex Session Tabs: New Chat Tab",
-        "icon": "$(add)"
-      },
-      {
-        "command": "codexSessionTabs.openSession",
-        "title": "Codex Session Tabs: Open Saved Chat"
-      }
-    ],
-    "menus": {
-      "editor/title": [
-        {
-          "command": "codexSessionTabs.newTab",
-          "when": "activeWebviewPanelId == codexSessionTabs.chat",
-          "group": "navigation"
-        }
-      ]
-    },
-    "configuration": {
-      "title": "Codex Session Tabs",
-      "properties": {
-        "codexSessionTabs.executablePath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Absolute path to the Codex CLI. Leave empty to find it on PATH."
-        }
-      }
-    }
+    "commands": [{
+      "command": "codexSessionTabs.newTab",
+      "title": "Codex: New Codex Tab",
+      "icon": "$(add)"
+    }],
+    "keybindings": [{
+      "command": "codexSessionTabs.newTab",
+      "key": "ctrl+alt+n",
+      "mac": "ctrl+alt+n"
+    }]
   },
   "scripts": {
     "test": "node --test test/*.test.js",
