@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
   "description": "Open and organize official Codex chats in editor tabs.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "youngunghan",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/codex-session-tabs.git" },
   "license": "MIT",
@@ -33,7 +33,7 @@
       "explorer": [{ "id": "codexSessionTabs.sessions", "name": "Codex Sessions" }]
     },
     "menus": {
-      "editor/title": [{ "command": "codexSessionTabs.newTab", "when": "resourceScheme == openai-codex", "group": "navigation@1" }],
+      "editor/title": [{ "command": "codexSessionTabs.newTab", "group": "navigation@1" }],
       "view/title": [{ "command": "codexSessionTabs.newTab", "when": "view == codexSessionTabs.sessions", "group": "navigation@1" }],
       "view/item/context": [
         { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "inline@1" },

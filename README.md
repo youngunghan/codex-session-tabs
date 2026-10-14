@@ -5,9 +5,11 @@ Open multiple independent **official Codex** chats in VS Code or Cursor editor t
 ## Use
 
 1. Install the official **Codex** extension (`openai.chatgpt`) and sign in.
-2. In VS Code, install **Codex Session Tabs** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [GitHub release](https://github.com/youngunghan/codex-session-tabs/releases/tag/v0.4.0) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
+2. In VS Code, install **Codex Session Tabs** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [latest GitHub release](https://github.com/youngunghan/codex-session-tabs/releases/latest) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
 3. In a Remote SSH window, install **both Codex Session Tabs and official Codex on the remote workspace host**.
-4. Run **Codex: New Codex Tab**, click **+ Codex** in the status bar or the Codex editor title bar, or press `Ctrl+Alt+N`. Each call opens a new editor tab directly. Drag tabs into separate editor groups if desired.
+4. Run **Codex: New Codex Tab**, click **+ Codex** in the status bar or the **+** button (**Codex: New Codex Tab**) in any editor title bar, or press `Ctrl+Alt+N`. Each call opens a new editor tab directly. Drag tabs into separate editor groups if desired.
+
+The official Codex logo button still runs **Open Codex Sidebar**. This extension adds its own **+** button; it does not override the official command. To keep only the tab button, right-click the editor toolbar and hide **Open Codex Sidebar** if your IDE offers that menu option.
 
 When you select a saved conversation from the official Codex history, it opens as a separate editor tab. The official Codex editor supplies its conversation title. The active **+ Codex** tab stays open by default, protecting any ongoing conversation or unsent input. To close that tab automatically when a saved conversation opens, opt in to `codexSessionTabs.replaceNewTabOnHistoryOpen`. This also applies when another command opens a saved conversation while the new tab is active. **An active conversation or unsent input in the closed tab may be lost; this extension cannot restore that tab from Recently closed.** Tabs opened by older versions or by the official Codex command are left alone.
 
