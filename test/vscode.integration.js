@@ -44,6 +44,33 @@ async function run() {
     assert.ok(tabs.some(tab => tab.input.uri.toString() === uri), `Codex tab ${uri} should remain open`);
   }
 
+  const sessionUris = ['session-one', 'session-two'].map(id =>
+    vscode.Uri.parse(`openai-codex://route/local/${id}`));
+  for (const uri of sessionUris) {
+    await vscode.commands.executeCommand('codexSessionTabs.reopenSession', { uri: uri.toString() });
+  }
+  tabs = await waitForTabs(before.length + 4);
+  for (const uri of sessionUris) {
+    assert.ok(tabs.some(tab => tab.input.uri.toString() === uri.toString()),
+      `reopening ${uri.toString()} should create its own Codex editor tab`);
+  }
+  await vscode.window.tabGroups.close(tabs.filter(tab =>
+    sessionUris.some(uri => uri.toString() === tab.input.uri.toString())));
+
+  const previewSessionUris = ['preview-one', 'preview-two'].map(id =>
+    vscode.Uri.parse(`openai-codex://route/local/${id}`));
+  for (const uri of previewSessionUris) {
+    await vscode.commands.executeCommand('vscode.openWith', uri, 'chatgpt.conversationEditor', {
+      preview: true, preserveFocus: false
+    });
+  }
+  tabs = await waitForTabs(before.length + 4);
+  const previewSessionTabs = tabs.filter(tab =>
+    previewSessionUris.some(uri => uri.toString() === tab.input.uri.toString()));
+  assert.equal(previewSessionTabs.length, 2, 'opening a second history preview must retain the first session tab');
+  assert.ok(previewSessionTabs.every(tab => !tab.isPreview), 'history session tabs should be pinned when they open');
+  await vscode.window.tabGroups.close(previewSessionTabs);
+
   await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
   assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.input.uri.toString(), first.toString());
   assert.equal(codexTabs().length, before.length + 2, 'focusing from the sessions list must not create another tab');

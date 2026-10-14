@@ -112,6 +112,20 @@ class HistoryTabReplacement {
   }
 
   async onTabsChanged(event) {
+    for (const tab of event.opened) {
+      if (!tab.isPreview || !isCodexTab(tab, this.api) || !isResumableUri(tab.input.uri)) continue;
+      const group = this.api.window.tabGroups.all.find(candidate => candidate.tabs.includes(tab));
+      try {
+        await this.api.commands.executeCommand('vscode.openWith', tab.input.uri, EDITOR_ID, {
+          viewColumn: group?.viewColumn ?? this.api.ViewColumn.Active,
+          preview: false,
+          preserveFocus: true
+        });
+      } catch (error) {
+        console.error('Codex Sessions: failed to keep history tab open', error);
+      }
+    }
+
     const previous = this.previousActive;
     const current = this.active();
     const openedHistory = event.opened.find(tab =>
