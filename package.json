@@ -1,8 +1,8 @@
 {
   "name": "yuhan-codex-session-tabs",
-  "displayName": "yuhan",
+  "displayName": "Codex Session Tabs",
   "description": "Open the official Codex chat in multiple independent editor tabs.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "youngunghan",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/yuhan-codex-session-tabs.git" },
   "license": "MIT",

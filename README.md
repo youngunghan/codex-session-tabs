@@ -1,12 +1,12 @@
-# yuhan
+# Codex Session Tabs
 
 Open multiple independent **official Codex** chats in VS Code or Cursor editor tabs. This is a community extension and is not affiliated with OpenAI.
 
 ## Use
 
 1. Install the official **Codex** extension (`openai.chatgpt`) and sign in.
-2. In VS Code, install **yuhan** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [GitHub release](https://github.com/youngunghan/yuhan-codex-session-tabs/releases/tag/v0.2.2) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
-3. In a Remote SSH window, install **both yuhan and official Codex on the remote workspace host**.
+2. In VS Code, install **Codex Session Tabs** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [GitHub release](https://github.com/youngunghan/yuhan-codex-session-tabs/releases/tag/v0.2.3) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
+3. In a Remote SSH window, install **both Codex Session Tabs and official Codex on the remote workspace host**.
 4. Run **Codex: New Codex Tab**, click **+ Codex** in the status bar, or press `Ctrl+Alt+N`. Repeat to open more tabs. Drag tabs into separate editor groups if desired.
 
 If you installed a 0.2.0 or 0.2.1 VSIX, uninstall its `local-development.yuhan-codex-session-tabs` extension before installing this release. The publisher change creates a different extension ID, and keeping both versions would duplicate the command and status button.
