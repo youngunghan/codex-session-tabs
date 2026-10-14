@@ -16,7 +16,12 @@ const fakeVscode = {
     dispose() {}
   },
   TabInputCustom: class {
-    constructor(uri, viewType) { this.uri = uri; this.viewType = viewType; }
+    constructor(uri, viewType) {
+      this.uri = uri.toString === Object.prototype.toString
+        ? { ...uri, toString: () => `${uri.scheme}://${uri.authority}${uri.path}#${uri.fragment || ''}` }
+        : uri;
+      this.viewType = viewType;
+    }
   },
   window: { tabGroups: { all: [] } }
 };
@@ -84,6 +89,243 @@ test('history also replaces the new tab when VS Code reports opening before acti
   group.activeTab = history;
   await replacement.onTabsChanged({ opened: [], changed: [history] });
   assert.deepEqual(closed, [newTab]);
+});
+
+test('a history tab inherits the exact managed flow for repeated history switches', async () => {
+  const makeTab = uri => ({ input: new fakeVscode.TabInputCustom(uri, 'chatgpt.conversationEditor'), isPreview: false });
+  const first = makeTab(extension.newPanelUri());
+  const historyOne = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/one' });
+  const historyTwo = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/two' });
+  const group = { tabs: [first], activeTab: first };
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      activeTabGroup: group,
+      close: async tab => { closed.push(tab); group.tabs = group.tabs.filter(item => item !== tab); }
+    } }
+  };
+  const replacement = new extension.HistoryTabReplacement(api);
+  group.tabs.push(historyOne);
+  group.activeTab = historyOne;
+  await replacement.onTabsChanged({ opened: [historyOne], closed: [] });
+  assert.deepEqual(closed, [first]);
+
+  group.tabs.push(historyTwo);
+  group.activeTab = historyTwo;
+  await replacement.onTabsChanged({ opened: [historyTwo], closed: [] });
+  assert.deepEqual(closed, [first, historyOne],
+    'the second saved-history selection should replace the exact history tab adopted by the first');
+  assert.deepEqual(group.tabs, [historyTwo]);
+});
+
+test('two managed tabs retain independent history flows', async () => {
+  const makeTab = uri => ({ input: new fakeVscode.TabInputCustom(uri, 'chatgpt.conversationEditor'), isPreview: false });
+  const first = makeTab(extension.newPanelUri());
+  const second = makeTab(extension.newPanelUri());
+  const firstHistory = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/first' });
+  const secondHistory = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/second' });
+  const group = { tabs: [first, second], activeTab: first };
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      activeTabGroup: group,
+      close: async tab => { closed.push(tab); group.tabs = group.tabs.filter(item => item !== tab); }
+    } }
+  };
+  const replacement = new extension.HistoryTabReplacement(api);
+  group.tabs.push(firstHistory);
+  group.activeTab = firstHistory;
+  await replacement.onTabsChanged({ opened: [firstHistory], closed: [] });
+  assert.deepEqual(closed, [first]);
+
+  group.activeTab = second;
+  await replacement.onTabsChanged({ opened: [], closed: [] });
+  group.tabs.push(secondHistory);
+  group.activeTab = secondHistory;
+  await replacement.onTabsChanged({ opened: [secondHistory], closed: [] });
+  assert.deepEqual(closed, [first, second]);
+  assert.deepEqual(group.tabs, [firstHistory, secondHistory]);
+});
+
+test('a same-event official source disposal adopts history without closing twice', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/replaced' }, 'chatgpt.conversationEditor') };
+  const group = { tabs: [], activeTab: history };
+  let closeCalls = 0;
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      activeTabGroup: group,
+      close: async () => { closeCalls++; }
+    } }
+  };
+  const replacement = new extension.HistoryTabReplacement(api);
+  replacement.previousActive = { group, tab: managed };
+  group.tabs.push(history);
+  await replacement.onTabsChanged({ opened: [history], closed: [managed] });
+  assert.equal(closeCalls, 0, 'the already-disposed source must not be closed a second time');
+
+  const nextHistory = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/next' }, 'chatgpt.conversationEditor') };
+  group.tabs.push(nextHistory);
+  group.activeTab = nextHistory;
+  await replacement.onTabsChanged({ opened: [nextHistory], closed: [] });
+  assert.equal(closeCalls, 1, 'lineage should transfer only to the exact history tab from the disposal event');
+  assert.deepEqual(group.tabs, [history, nextHistory]);
+});
+
+test('a preview history tab opened in the background is not treated as user selection', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/background' }, 'chatgpt.conversationEditor'), isPreview: true };
+  const group = { tabs: [managed], activeTab: managed, viewColumn: 1 };
+  const closed = [];
+  const promoted = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    ViewColumn: { Active: -1 },
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      all: [group], activeTabGroup: group,
+      close: async tab => { closed.push(tab); group.tabs = group.tabs.filter(item => item !== tab); }
+    } },
+    commands: { executeCommand: async (_command, uri, _editor, options) => {
+      promoted.push({ uri, options });
+      history.isPreview = false;
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  group.tabs.push(history);
+  await manager.onTabsChanged({ opened: [history], closed: [] });
+  assert.deepEqual(closed, [], 'opening a background history tab must not close the managed source');
+  assert.deepEqual(promoted, [], 'pinning must wait until the history tab is independently active');
+
+  group.activeTab = history;
+  await manager.onTabsChanged({ opened: [], changed: [history], closed: [] });
+  assert.deepEqual(closed, [managed]);
+  assert.equal(promoted.length, 1, 'an active history tab should be pinned after the replacement decision');
+});
+
+test('history replacement aborts if the target stops being active during stabilization', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/transient' }, 'chatgpt.conversationEditor') };
+  const other = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const group = { tabs: [managed, history, other], activeTab: history };
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      all: [group], activeTabGroup: group,
+      close: async tab => { closed.push(tab); }
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  const work = manager.onTabsChanged({ opened: [history], closed: [] });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  group.activeTab = other;
+  await manager.onTabsChanged({ opened: [], changed: [other], closed: [] });
+  await work;
+  assert.deepEqual(closed, [], 'the source must remain when the target is no longer active');
+});
+
+test('a failed preview pin leaves the managed source tab open', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/pin-failure' }, 'chatgpt.conversationEditor'), isPreview: true };
+  const group = { tabs: [managed], activeTab: managed, viewColumn: 1 };
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    ViewColumn: { Active: -1 },
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      all: [group], activeTabGroup: group,
+      close: async tab => { closed.push(tab); }
+    } },
+    commands: { executeCommand: async () => { throw new Error('simulated editor pin failure'); } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  group.tabs.push(history);
+  group.activeTab = history;
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await manager.onTabsChanged({ opened: [history], closed: [] });
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.deepEqual(closed, [], 'the source must not close unless the target is pinned');
+  assert.ok(group.tabs.includes(managed));
+});
+
+test('duplicate, pre-existing, or cross-group history tabs are not replacement targets', async () => {
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const existing = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/already-open' }, 'chatgpt.conversationEditor') };
+  const duplicate = { input: new fakeVscode.TabInputCustom(existing.input.uri, 'chatgpt.conversationEditor') };
+  const group = { tabs: [managed], activeTab: managed };
+  const otherGroup = { tabs: [existing], activeTab: existing };
+  const closed = [];
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { tabGroups: {
+      all: [group, otherGroup], activeTabGroup: group,
+      close: async tab => { closed.push(tab); }
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  group.tabs.push(duplicate);
+  group.activeTab = duplicate;
+  await manager.onTabsChanged({ opened: [duplicate], closed: [] });
+  assert.deepEqual(closed, [], 'a URI already open in another group must not be adopted');
+
+  group.tabs = [managed];
+  group.activeTab = managed;
+  manager.syncActive();
+  const distinctA = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/a' }, 'chatgpt.conversationEditor') };
+  const distinctB = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/b' }, 'chatgpt.conversationEditor') };
+  group.tabs.push(distinctA, distinctB);
+  group.activeTab = distinctA;
+  await manager.onTabsChanged({ opened: [distinctA, distinctB], closed: [] });
+  assert.deepEqual(closed, [], 'a batch with multiple new histories is ambiguous and must be skipped');
+
+  group.activeTab = managed;
+  manager.syncActive();
+  const crossGroup = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/cross-group' }, 'chatgpt.conversationEditor') };
+  otherGroup.tabs.push(crossGroup);
+  await manager.onTabsChanged({ opened: [crossGroup], closed: [] });
+  assert.deepEqual(closed, [], 'a history tab in another group must not replace the managed source');
+});
+
+test('history replacement defaults on while a persisted false remains an opt-out', async () => {
+  const manifest = require('../package.json');
+  assert.equal(manifest.contributes.configuration.properties[
+    'codexSessionTabs.replaceNewTabOnHistoryOpen'].default, true);
+
+  const managed = { input: new fakeVscode.TabInputCustom(extension.newPanelUri(), 'chatgpt.conversationEditor') };
+  const history = { input: new fakeVscode.TabInputCustom(
+    { scheme: 'openai-codex', authority: 'route', path: '/local/old-false' }, 'chatgpt.conversationEditor') };
+  const group = { tabs: [managed, history], activeTab: history };
+  let closed = 0;
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    workspace: { getConfiguration: () => ({ get: (_key, fallback) => false ?? fallback }) },
+    window: { tabGroups: { activeTabGroup: group, close: async () => { closed++; } } }
+  };
+  await new extension.HistoryTabReplacement(api).onTabsChanged({ opened: [history], closed: [] });
+  assert.equal(closed, 0, 'an existing explicit false preference must continue to disable replacement');
 });
 
 test('preview history promotion preserves replacement state across reentrant tab events', async () => {
@@ -192,7 +434,7 @@ test('history replacement can be disabled and extension reopen is suppressed', a
   enabled = true;
   group.tabs = [newTab];
   group.activeTab = newTab;
-  replacement.syncActive();
+  await replacement.onTabsChanged({ opened: [], closed: [history] });
   replacement.suppress(historyUri.toString());
   group.tabs.push(history);
   group.activeTab = history;

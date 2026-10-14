@@ -12,6 +12,11 @@ const COMMAND_ID = 'codexSessionTabs.newTab';
 const ALIASES_KEY = 'codexSessionTabs.aliases';
 const RECENT_KEY = 'codexSessionTabs.recent';
 const REPLACEMENT_WINDOW_MS = 1000;
+const HISTORY_STABILITY_MS = 150;
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 const verifiedBundles = new Map();
 
 async function checkCodexEditor(requireNewPanelRoute = true) {
@@ -87,6 +92,15 @@ class HistoryTabReplacement {
     this.previousActive = this.active();
     this.pending = undefined;
     this.suppressed = new Map();
+    this.managedTabs = new Set();
+    this.knownUris = this.snapshotUris();
+  }
+
+  snapshotUris() {
+    const groups = this.api.window.tabGroups.all || [];
+    const activeGroup = this.api.window.tabGroups.activeTabGroup;
+    const allGroups = activeGroup && !groups.includes(activeGroup) ? [...groups, activeGroup] : groups;
+    return openCodexTabs(allGroups, this.api).map(entry => entry.uri);
   }
 
   active() {
@@ -111,57 +125,119 @@ class HistoryTabReplacement {
     this.suppressed.delete(uri);
   }
 
+  isManaged(tab) {
+    return isCodexTab(tab, this.api) &&
+      (isManagedNewUri(tab.input.uri) || this.managedTabs.has(tab));
+  }
+
+  isStableTarget(pending) {
+    const active = this.active();
+    return this.pending === pending && active?.tab === pending.history &&
+      active.group === pending.group && pending.group.tabs.includes(pending.history) &&
+      pending.history.input.uri.toString() === pending.historyUri &&
+      !pending.history.isPreview &&
+      (pending.sourceDisposed || pending.group.tabs.includes(pending.original)) &&
+      Date.now() - pending.at < REPLACEMENT_WINDOW_MS;
+  }
+
   async onTabsChanged(event) {
-    const previewHistoryTabs = event.opened.filter(tab =>
-      tab.isPreview && isCodexTab(tab, this.api) && isResumableUri(tab.input.uri));
+    const opened = event.opened || [];
     const previous = this.previousActive;
+    const previousWasManaged = this.isManaged(previous?.tab);
+    const closed = event.closed || [];
+    const previouslyKnownUris = this.knownUris;
+    this.knownUris = this.snapshotUris();
+    for (const tab of closed) this.managedTabs.delete(tab);
     const current = this.active();
-    const openedHistory = event.opened.find(tab =>
-      isCodexTab(tab, this.api) && isResumableUri(tab.input.uri));
+    const openedHistories = opened.filter(tab =>
+      isCodexTab(tab, this.api) && isResumableUri(tab.input.uri) &&
+      !previouslyKnownUris.includes(tab.input.uri.toString()));
+    const openedHistory = openedHistories.length === 1 ? openedHistories[0] : undefined;
     const historyUri = openedHistory?.input.uri.toString();
     const suppressed = historyUri && this.suppressed.has(historyUri);
     if (suppressed) this.unsuppress(historyUri);
     const enabled = this.api.workspace?.getConfiguration?.('codexSessionTabs')
-      ?.get('replaceNewTabOnHistoryOpen', false) ?? false;
-    if (enabled && !suppressed && openedHistory && previous &&
-        isCodexTab(previous.tab, this.api) && isManagedNewUri(previous.tab.input.uri) &&
-        previous.group.tabs.includes(previous.tab) &&
+      ?.get('replaceNewTabOnHistoryOpen', true) ?? true;
+    const sourceDisposed = !!previous && closed.includes(previous.tab);
+    const sameGroupHistory = !!previous && !!openedHistory && openedHistory !== previous.tab &&
+        historyUri !== previous.tab.input.uri.toString() &&
         previous.group.tabs.includes(openedHistory) &&
-        (current?.tab === previous.tab || current?.tab === openedHistory)) {
-      this.pending = { original: previous.tab, history: openedHistory, group: previous.group, at: Date.now() };
+        (!current || current.group === previous.group);
+    if (enabled && !suppressed && openedHistory && previous && previousWasManaged &&
+        sameGroupHistory &&
+        (sourceDisposed || previous.group.tabs.includes(previous.tab)) &&
+        (sourceDisposed || current?.tab === previous.tab || current?.tab === openedHistory)) {
+      this.pending = {
+        original: previous.tab,
+        history: openedHistory,
+        group: previous.group,
+        sourceDisposed,
+        historyUri,
+        at: Date.now()
+      };
     }
 
     const pending = this.pending;
-    const shouldReplace = pending && current?.tab === pending.history &&
-      current.group === pending.group && pending.group.tabs.includes(pending.original) &&
+    const shouldReplace = pending && !pending.processing && current?.tab === pending.history &&
+      current.group === pending.group &&
+      (pending.sourceDisposed || pending.group.tabs.includes(pending.original)) &&
+      pending.group.tabs.includes(pending.history) &&
+      pending.history.input.uri.toString() === pending.historyUri &&
       Date.now() - pending.at < REPLACEMENT_WINDOW_MS;
+    let attemptedPin = false;
     this.previousActive = current;
     if (shouldReplace) {
-      this.pending = undefined;
-      try {
-        await this.api.window.tabGroups.close(pending.original, true);
-      } catch (error) {
-        console.error('Codex Sessions: failed to replace the new tab', error);
+      pending.processing = true;
+      await wait(HISTORY_STABILITY_MS);
+      if (this.pending === pending && this.active()?.tab === pending.history && pending.history.isPreview) {
+        // Pin only after independent activation, then allow the host's editor
+        // transition to settle before closing its source.
+        attemptedPin = true;
+        await this.keepHistoryTabOpen(pending.history);
+        await wait(HISTORY_STABILITY_MS);
+      }
+      const stable = this.isStableTarget(pending);
+      if (stable) {
+        this.pending = undefined;
+        // The official editor may either open a second tab or dispose its
+        // source while routing to history. Adopt a disposed source only when
+        // the same tab event reports that close alongside this exact history.
+        this.managedTabs.add(pending.history);
+        if (!pending.sourceDisposed) {
+          try {
+            await this.api.window.tabGroups.close(pending.original, true);
+          } catch (error) {
+            this.managedTabs.delete(pending.history);
+            console.error('Codex Sessions: failed to replace the new tab', error);
+          }
+        }
+      } else if (this.pending === pending) {
+        pending.processing = false;
       }
       this.previousActive = this.active();
     } else if (pending && (Date.now() - pending.at >= REPLACEMENT_WINDOW_MS ||
-        (current?.tab !== pending.original && current?.tab !== pending.history))) {
+        (!pending.sourceDisposed && current?.tab !== pending.original && current?.tab !== pending.history))) {
       this.pending = undefined;
     }
-    for (const tab of previewHistoryTabs) await this.keepHistoryTabOpen(tab);
+    const activeTab = this.active()?.tab;
+    if (!attemptedPin && activeTab?.isPreview && isCodexTab(activeTab, this.api) && isResumableUri(activeTab.input.uri)) {
+      await this.keepHistoryTabOpen(activeTab);
+    }
   }
 
   async keepHistoryTabOpen(tab) {
     const group = this.api.window.tabGroups.all.find(candidate => candidate.tabs.includes(tab));
-    if (!group || !tab.isPreview) return;
+    if (!group || !tab.isPreview) return !tab.isPreview;
     try {
       await this.api.commands.executeCommand('vscode.openWith', tab.input.uri, EDITOR_ID, {
         viewColumn: group.viewColumn,
         preview: false,
         preserveFocus: true
       });
+      return !tab.isPreview;
     } catch (error) {
       console.error('Codex Sessions: failed to keep history tab open', error);
+      return false;
     }
   }
 }
@@ -340,7 +416,10 @@ function activate(context) {
       const parsed = vscode.Uri.parse(uri);
       if (!isResumableUri(parsed)) throw new Error('This entry does not have a resumable Codex session URI.');
       await checkCodexEditor(false);
-      replacement.suppress(parsed.toString());
+      const alreadyOpen = openCodexTabs(vscode.window.tabGroups.all, vscode)
+        .some(entry => entry.uri === parsed.toString());
+      replacement.unsuppress(parsed.toString());
+      if (!alreadyOpen) replacement.suppress(parsed.toString());
       try {
         await vscode.commands.executeCommand('vscode.openWith', parsed, EDITOR_ID, {
           viewColumn: vscode.ViewColumn.Active, preview: false, preserveFocus: false
