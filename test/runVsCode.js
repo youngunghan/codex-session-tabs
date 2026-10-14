@@ -9,6 +9,7 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 
 runTests({
   ...(process.env.CODE_EXECUTABLE ? { vscodeExecutablePath: process.env.CODE_EXECUTABLE } : {}),
+  ...(!process.env.CODE_EXECUTABLE && process.env.VSCODE_TEST_VERSION ? { version: process.env.VSCODE_TEST_VERSION } : {}),
   extensionDevelopmentPath: path.resolve(__dirname, '..'),
   extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
   launchArgs: [path.resolve(__dirname, '..'), '--disable-extensions', '--skip-welcome'],

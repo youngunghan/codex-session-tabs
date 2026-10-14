@@ -4,6 +4,7 @@ test/**
 node_modules/**
 .git/**
 .gitignore
-.integration.log
+.integration*.log
 .vscode-test/**
 .compat/**
+.install-test/**

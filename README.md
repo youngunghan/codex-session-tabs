@@ -20,7 +20,7 @@ The extension uses the documented Codex app-server protocol and the public VS Co
 
 The chat UI supports plain-text prompts and responses, streamed assistant text, command and file-change summaries, one-time command/file-change approval, stop, and restoration of the last 50 turns. Each tab retains its draft across VS Code reloads. Closing a tab does not delete its Codex history. Sessions in the same folder share the same files; this extension does not create Git worktrees.
 
-The protocol lifecycle has been checked locally with Codex CLI 0.153.4 and 0.162.1 on Windows. A VS Code integration check has opened two separate editor tabs on Windows with VS Code 1.141.1. The included CI workflow is configured to run unit, editor-tab, and VSIX packaging checks on Windows, macOS, and Linux after this source is pushed to GitHub. Those CI checks have not run yet.
+The protocol lifecycle has been checked locally with Codex CLI 0.153.4 and 0.162.1 on Windows. A VS Code integration check has opened two separate editor tabs on Windows with VS Code 1.95.0 and 1.141.1. The included CI workflow is configured to run unit, editor-tab, and VSIX packaging checks on Windows, macOS, and Linux after this source is pushed to GitHub. Those CI checks have not run yet.
 
 ## Current limits
 
