@@ -22,6 +22,19 @@ async function run() {
     }
     assert.equal(codexTabs().length, count, `expected ${count} Codex editor tabs`);
   }
+  async function waitForPinnedSessions(uris) {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const tabs = codexTabs().filter(tab =>
+        uris.some(uri => uri.toString() === tab.input.uri.toString()));
+      if (tabs.length === uris.length && tabs.every(tab => !tab.isPreview)) return tabs;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const tabs = codexTabs().filter(tab =>
+      uris.some(uri => uri.toString() === tab.input.uri.toString()));
+    assert.equal(tabs.length, uris.length, 'both history session tabs should remain open');
+    assert.ok(tabs.every(tab => !tab.isPreview), 'history session tabs should be pinned when they open');
+    return tabs;
+  }
 
   await codex.activate();
   const initial = codexTabs();
@@ -64,11 +77,9 @@ async function run() {
       preview: true, preserveFocus: false
     });
   }
+  const previewSessionTabs = await waitForPinnedSessions(previewSessionUris);
   tabs = await waitForTabs(before.length + 4);
-  const previewSessionTabs = tabs.filter(tab =>
-    previewSessionUris.some(uri => uri.toString() === tab.input.uri.toString()));
   assert.equal(previewSessionTabs.length, 2, 'opening a second history preview must retain the first session tab');
-  assert.ok(previewSessionTabs.every(tab => !tab.isPreview), 'history session tabs should be pinned when they open');
   await vscode.window.tabGroups.close(previewSessionTabs);
 
   await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());

@@ -86,6 +86,66 @@ test('history also replaces the new tab when VS Code reports opening before acti
   assert.deepEqual(closed, [newTab]);
 });
 
+test('preview history promotion preserves replacement state across reentrant tab events', async () => {
+  const makeTab = uri => ({ input: new fakeVscode.TabInputCustom(uri, 'chatgpt.conversationEditor'), isPreview: false });
+  const newTab = makeTab(extension.newPanelUri());
+  const history = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/history-id' });
+  history.isPreview = true;
+  const group = { tabs: [newTab], activeTab: newTab, viewColumn: 1 };
+  const closed = [];
+  let replacement;
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    ViewColumn: { Active: -1 },
+    workspace: { getConfiguration: () => ({ get: () => true }) },
+    window: { tabGroups: {
+      get all() { return [group]; },
+      get activeTabGroup() { return group; },
+      close: async tab => {
+        closed.push(tab);
+        group.tabs = group.tabs.filter(item => item !== tab);
+      }
+    } },
+    commands: { executeCommand: async (command, uri, editor, options) => {
+      assert.equal(command, 'vscode.openWith');
+      assert.equal(uri, history.input.uri);
+      assert.equal(editor, 'chatgpt.conversationEditor');
+      assert.equal(options.viewColumn, group.viewColumn);
+      assert.equal(options.preview, false);
+      assert.equal(options.preserveFocus, true);
+      history.isPreview = false;
+      await replacement.onTabsChanged({ opened: [], changed: [history], closed: [] });
+    } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  replacement = manager;
+  group.tabs.push(history);
+  group.activeTab = history;
+  await manager.onTabsChanged({ opened: [history], changed: [], closed: [] });
+  assert.deepEqual(closed, [newTab]);
+  assert.deepEqual(group.tabs, [history]);
+});
+
+test('preview history promotion skips tabs without a current editor group', async () => {
+  const makeTab = uri => ({ input: new fakeVscode.TabInputCustom(uri, 'chatgpt.conversationEditor'), isPreview: false });
+  const history = makeTab({ scheme: 'openai-codex', authority: 'route', path: '/local/history-id' });
+  history.isPreview = true;
+  const other = makeTab(extension.newPanelUri());
+  const staleGroup = { tabs: [], activeTab: other, viewColumn: 1 };
+  let opened = 0;
+  const api = {
+    TabInputCustom: fakeVscode.TabInputCustom,
+    ViewColumn: { Active: -1 },
+    window: { tabGroups: {
+      all: [staleGroup], activeTabGroup: staleGroup
+    } },
+    commands: { executeCommand: async () => { opened++; } }
+  };
+  const manager = new extension.HistoryTabReplacement(api);
+  await manager.onTabsChanged({ opened: [history], changed: [], closed: [] });
+  assert.equal(opened, 0, 'a stale or missing tab group must not fall back to the active group');
+});
+
 test('history navigation does not close an unrelated Codex tab', async () => {
   const newTab = { input: new fakeVscode.TabInputCustom(
     { scheme: 'openai-codex', authority: 'route', path: '/extension/panel/new', fragment: '' },

@@ -112,20 +112,8 @@ class HistoryTabReplacement {
   }
 
   async onTabsChanged(event) {
-    for (const tab of event.opened) {
-      if (!tab.isPreview || !isCodexTab(tab, this.api) || !isResumableUri(tab.input.uri)) continue;
-      const group = this.api.window.tabGroups.all.find(candidate => candidate.tabs.includes(tab));
-      try {
-        await this.api.commands.executeCommand('vscode.openWith', tab.input.uri, EDITOR_ID, {
-          viewColumn: group?.viewColumn ?? this.api.ViewColumn.Active,
-          preview: false,
-          preserveFocus: true
-        });
-      } catch (error) {
-        console.error('Codex Sessions: failed to keep history tab open', error);
-      }
-    }
-
+    const previewHistoryTabs = event.opened.filter(tab =>
+      tab.isPreview && isCodexTab(tab, this.api) && isResumableUri(tab.input.uri));
     const previous = this.previousActive;
     const current = this.active();
     const openedHistory = event.opened.find(tab =>
@@ -159,6 +147,21 @@ class HistoryTabReplacement {
     } else if (pending && (Date.now() - pending.at >= REPLACEMENT_WINDOW_MS ||
         (current?.tab !== pending.original && current?.tab !== pending.history))) {
       this.pending = undefined;
+    }
+    for (const tab of previewHistoryTabs) await this.keepHistoryTabOpen(tab);
+  }
+
+  async keepHistoryTabOpen(tab) {
+    const group = this.api.window.tabGroups.all.find(candidate => candidate.tabs.includes(tab));
+    if (!group || !tab.isPreview) return;
+    try {
+      await this.api.commands.executeCommand('vscode.openWith', tab.input.uri, EDITOR_ID, {
+        viewColumn: group.viewColumn,
+        preview: false,
+        preserveFocus: true
+      });
+    } catch (error) {
+      console.error('Codex Sessions: failed to keep history tab open', error);
     }
   }
 }
