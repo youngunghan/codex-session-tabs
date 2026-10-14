@@ -100,10 +100,32 @@ async function run() {
     const config = vscode.workspace.getConfiguration('codexSessionTabs');
     const previousGlobalValue = config.inspect('replaceNewTabOnHistoryOpen').globalValue;
     try {
+      if (previousGlobalValue === false) {
+        assert.equal(config.get('replaceNewTabOnHistoryOpen'), false,
+          'a preseeded persisted false should be effective before the default-state check');
+        const carriedFalseSource = await vscode.commands.executeCommand('codexSessionTabs.newTab');
+        await vscode.commands.executeCommand('codexSessionTabs.focusTab', carriedFalseSource.toString());
+        await vscode.commands.executeCommand('vscode.open', existingSessionUri);
+        for (let attempt = 0; attempt < 50; attempt++) {
+          const opened = codexTabs();
+          if (opened.some(tab => tab.input.uri.toString() === carriedFalseSource.toString()) &&
+              opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString())) break;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        assert.ok(codexTabs().some(tab => tab.input.uri.toString() === carriedFalseSource.toString()),
+          'a preseeded persisted false should keep its managed source after history selection');
+        assert.ok(codexTabs().some(tab => tab.input.uri.toString() === existingSessionUri.toString()),
+          'a preseeded persisted false should still open the saved history in its own tab');
+        console.log('CODEX_CARRIED_FALSE_RESULT persisted=false source=retained history=open');
+        await vscode.window.tabGroups.close(codexTabs().filter(tab =>
+          [carriedFalseSource.toString(), existingSessionUri.toString()].includes(tab.input.uri.toString())));
+        await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
+      }
       await config.update('replaceNewTabOnHistoryOpen', undefined, vscode.ConfigurationTarget.Global);
       assert.equal(ours.packageJSON.contributes.configuration.properties['codexSessionTabs.replaceNewTabOnHistoryOpen'].default,
         true, 'history replacement should be the packaged default');
-      assert.equal(config.get('replaceNewTabOnHistoryOpen'), true,
+      assert.equal(vscode.workspace.getConfiguration('codexSessionTabs').get('replaceNewTabOnHistoryOpen'), true,
         'an unset setting should use the enabled default');
       await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
       await vscode.commands.executeCommand('vscode.open', existingSessionUri);
@@ -187,7 +209,8 @@ async function run() {
       assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
         'explicitly reopening a conversation should not close the active new tab');
     } finally {
-      await config.update('replaceNewTabOnHistoryOpen', previousGlobalValue, vscode.ConfigurationTarget.Global);
+      await vscode.workspace.getConfiguration('codexSessionTabs')
+        .update('replaceNewTabOnHistoryOpen', previousGlobalValue, vscode.ConfigurationTarget.Global);
     }
   }
   if (process.env.CODEX_TABS_TEST_MARKER) fs.writeFileSync(process.env.CODEX_TABS_TEST_MARKER, 'passed');
