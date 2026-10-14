@@ -42,6 +42,21 @@ async function run() {
   for (const uri of [existingUri, first.toString(), second.toString()]) {
     assert.ok(tabs.some(tab => tab.input.uri.toString() === uri), `Codex tab ${uri} should remain open`);
   }
+
+  await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
+  assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.input.uri.toString(), first.toString());
+  assert.equal(codexTabs().length, before.length + 2, 'focusing from the sessions list must not create another tab');
+
+  if (process.env.CODEX_TEST_SESSION_ID) {
+    const existingSessionUri = vscode.Uri.parse(`openai-codex://route/local/${process.env.CODEX_TEST_SESSION_ID}`);
+    await vscode.commands.executeCommand('vscode.openWith', existingSessionUri, 'chatgpt.conversationEditor', { preview: false });
+    const sessionTab = codexTabs().find(tab => tab.input.uri.toString() === existingSessionUri.toString());
+    assert.ok(sessionTab, 'existing Codex session should open');
+    await vscode.window.tabGroups.close(sessionTab);
+    await vscode.commands.executeCommand('codexSessionTabs.reopenSession', { uri: existingSessionUri.toString() });
+    assert.ok(codexTabs().some(tab => tab.input.uri.toString() === existingSessionUri.toString()),
+      'recent-session context action should reopen the existing conversation tab');
+  }
 }
 
 module.exports = { run };

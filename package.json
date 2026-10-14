@@ -1,8 +1,8 @@
 {
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
-  "description": "Open the official Codex chat in multiple independent editor tabs.",
-  "version": "0.2.4",
+  "description": "Open and organize official Codex chats in editor tabs.",
+  "version": "0.3.0",
   "publisher": "youngunghan",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/codex-session-tabs.git" },
   "license": "MIT",
@@ -12,13 +12,28 @@
   "main": "./src/extension.js",
   "extensionKind": ["workspace"],
   "extensionDependencies": ["openai.chatgpt"],
-  "activationEvents": ["onStartupFinished", "onCommand:codexSessionTabs.newTab"],
+  "activationEvents": ["onStartupFinished", "onView:codexSessionTabs.sessions", "onCommand:codexSessionTabs.newTab"],
   "contributes": {
-    "commands": [{
-      "command": "codexSessionTabs.newTab",
-      "title": "Codex: New Codex Tab",
-      "icon": "$(add)"
-    }],
+    "commands": [
+      { "command": "codexSessionTabs.newTab", "title": "Codex: New Codex Tab", "icon": "$(add)" },
+      { "command": "codexSessionTabs.focusTab", "title": "Codex Sessions: Focus Tab" },
+      { "command": "codexSessionTabs.renameTab", "title": "Codex Sessions: Rename List Label", "icon": "$(edit)" },
+      { "command": "codexSessionTabs.reopenSession", "title": "Codex Sessions: Reopen Conversation", "icon": "$(history)" }
+    ],
+    "views": {
+      "explorer": [{ "id": "codexSessionTabs.sessions", "name": "Codex Sessions" }]
+    },
+    "menus": {
+      "view/title": [{ "command": "codexSessionTabs.newTab", "when": "view == codexSessionTabs.sessions", "group": "navigation@1" }],
+      "view/item/context": [
+        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "inline@1" },
+        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "inline@1" },
+        { "command": "codexSessionTabs.reopenSession", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "inline@2" },
+        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "1_modify@1" },
+        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "1_modify@1" },
+        { "command": "codexSessionTabs.reopenSession", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "1_modify@2" }
+      ]
+    },
     "keybindings": [{
       "command": "codexSessionTabs.newTab",
       "key": "ctrl+alt+n",

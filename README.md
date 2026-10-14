@@ -5,9 +5,15 @@ Open multiple independent **official Codex** chats in VS Code or Cursor editor t
 ## Use
 
 1. Install the official **Codex** extension (`openai.chatgpt`) and sign in.
-2. In VS Code, install **Codex Session Tabs** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [GitHub release](https://github.com/youngunghan/codex-session-tabs/releases/tag/v0.2.4) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
+2. In VS Code, install **Codex Session Tabs** by publisher `youngunghan` from the Visual Studio Marketplace. In Cursor, install the VSIX from the [GitHub release](https://github.com/youngunghan/codex-session-tabs/releases/tag/v0.3.0) using **Extensions > ... > Install from VSIX**. Cursor uses Open VSX rather than the Visual Studio Marketplace, so this extension will not appear in Cursor search until it is separately published there.
 3. In a Remote SSH window, install **both Codex Session Tabs and official Codex on the remote workspace host**.
 4. Run **Codex: New Codex Tab**, click **+ Codex** in the status bar, or press `Ctrl+Alt+N`. Repeat to open more tabs. Drag tabs into separate editor groups if desired.
+
+## Sessions list
+
+Open **Codex Sessions** in the Explorer sidebar to see Codex editor tabs across all editor groups. Select an entry to focus its tab. Right-click an entry and choose **Rename List Label** to give it a local name; this changes the sidebar label, not the official Codex conversation title or editor tab title. List labels are saved per workspace. The list distinguishes the selected tab from other open tabs. It does not infer whether Codex is working or waiting for approval.
+
+The **Recently closed** section records tabs opened from an existing official Codex conversation URI (`/local/<id>` or `/remote/<id>`). Select one to reopen its URI, or run **Codex Sessions: Reopen Conversation** to reopen the latest one. Tabs opened with **+ Codex** retain their `/extension/panel/new#...` URI after chatting, so they cannot enter this list. VS Code and the official Codex extension handle editor-tab restoration when a window reloads; this extension reads restored tabs but does not recreate chats from its own records. Reopening a saved URI depends on the official Codex extension continuing to support that route.
 
 If you installed a 0.2.0 or 0.2.1 VSIX, uninstall its `local-development.yuhan-codex-session-tabs` extension before installing this release. The publisher change creates a different extension ID, and keeping both versions would duplicate the command and status button.
 
@@ -15,9 +21,9 @@ Each command call passes `openai-codex://route/extension/panel/new` with a uniqu
 
 ## Compatibility
 
-The VSIX contains only JavaScript and runs in desktop VS Code on Windows, macOS, and Linux. Its declared minimum is VS Code 1.96.2. GitHub CI tests all three operating systems with VS Code 1.96.2 and the current stable version, including opening two separate official Codex tabs and retaining a pre-existing tab. CI installs a compatible official Codex build from the Marketplace. These tests do not prove compatibility with every historical or future Codex version.
+The VSIX contains only JavaScript and runs in desktop VS Code on Windows, macOS, and Linux. Its declared minimum is VS Code 1.96.2. GitHub CI tests all three operating systems with VS Code 1.96.2 and the current stable version, including opening two separate official Codex tabs and retaining a pre-existing tab. The sessions list and recent-record logic have unit tests; reopening an existing local conversation URI was tested manually in VS Code on Windows, but that path is not exercised in CI. CI installs a compatible official Codex build from the Marketplace. These tests do not prove compatibility with every historical or future Codex version.
 
-Codex's editor route is an internal implementation detail and may change. The extension reports an error if the installed build no longer exposes the expected editor or route. An actual Cursor window and Remote SSH session have not yet been directly tested.
+Codex's editor route is an internal implementation detail and may change. The extension reports an error if the installed build no longer exposes the expected editor or route. A session's working, completed, and approval-pending states are not exposed through the stable VS Code tab API, so this extension does not claim to show them. An actual Cursor window and Remote SSH session have not yet been directly tested.
 
 ## Build and test
 
