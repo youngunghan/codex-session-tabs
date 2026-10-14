@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { runTests, runVSCodeCommand } = require('@vscode/test-electron');
+const { runTests, runVSCodeCommand, downloadAndUnzipVSCode } = require('@vscode/test-electron');
 
 delete process.env.ELECTRON_RUN_AS_NODE;
 
@@ -22,6 +22,22 @@ function findCodexExtension() {
   return undefined;
 }
 
+function resolveMacExecutable(expected) {
+  if (process.platform !== 'darwin' || fs.existsSync(expected)) return expected;
+  // Newer macOS archives can rename the app executable while test-electron
+  // still returns the older Contents/MacOS/Electron path.
+  const root = path.resolve(expected, '../../../..');
+  for (const app of fs.readdirSync(root).filter(name => name.endsWith('.app'))) {
+    const bin = path.join(root, app, 'Contents', 'MacOS');
+    if (!fs.existsSync(bin)) continue;
+    const executable = fs.readdirSync(bin)
+      .map(name => path.join(bin, name))
+      .find(file => fs.statSync(file).isFile() && (fs.statSync(file).mode & 0o111));
+    if (executable) return executable;
+  }
+  throw new Error(`VS Code's macOS executable was not found near ${expected}`);
+}
+
 async function main() {
   const options = {
     ...(process.env.CODE_EXECUTABLE ? { vscodeExecutablePath: process.env.CODE_EXECUTABLE } : {}),
@@ -33,6 +49,9 @@ async function main() {
     codexPath = findCodexExtension();
   }
   if (!codexPath) throw new Error('Could not find the installed official Codex extension. Set CODEX_EXTENSION_PATH.');
+  if (!options.vscodeExecutablePath && process.platform === 'darwin') {
+    options.vscodeExecutablePath = resolveMacExecutable(await downloadAndUnzipVSCode(options));
+  }
   await runTests({
     ...options,
     extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath],
