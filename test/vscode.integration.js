@@ -72,11 +72,13 @@ async function run() {
 
   const previewSessionUris = ['preview-one', 'preview-two'].map(id =>
     vscode.Uri.parse(`openai-codex://route/local/${id}`));
-  for (const uri of previewSessionUris) {
-    await vscode.commands.executeCommand('vscode.openWith', uri, 'chatgpt.conversationEditor', {
-      preview: true, preserveFocus: false
-    });
-  }
+  await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[0], 'chatgpt.conversationEditor', {
+    preview: true, preserveFocus: false
+  });
+  await waitForPinnedSessions([previewSessionUris[0]]);
+  await vscode.commands.executeCommand('vscode.openWith', previewSessionUris[1], 'chatgpt.conversationEditor', {
+    preview: true, preserveFocus: false
+  });
   const previewSessionTabs = await waitForPinnedSessions(previewSessionUris);
   tabs = await waitForTabs(before.length + 4);
   assert.equal(previewSessionTabs.length, 2, 'opening a second history preview must retain the first session tab');

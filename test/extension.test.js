@@ -93,6 +93,7 @@ test('preview history promotion preserves replacement state across reentrant tab
   history.isPreview = true;
   const group = { tabs: [newTab], activeTab: newTab, viewColumn: 1 };
   const closed = [];
+  let promotions = 0;
   let replacement;
   const api = {
     TabInputCustom: fakeVscode.TabInputCustom,
@@ -107,6 +108,7 @@ test('preview history promotion preserves replacement state across reentrant tab
       }
     } },
     commands: { executeCommand: async (command, uri, editor, options) => {
+      promotions++;
       assert.equal(command, 'vscode.openWith');
       assert.equal(uri, history.input.uri);
       assert.equal(editor, 'chatgpt.conversationEditor');
@@ -124,6 +126,8 @@ test('preview history promotion preserves replacement state across reentrant tab
   await manager.onTabsChanged({ opened: [history], changed: [], closed: [] });
   assert.deepEqual(closed, [newTab]);
   assert.deepEqual(group.tabs, [history]);
+  assert.equal(promotions, 1, 'the preview should be promoted once');
+  assert.equal(manager.previousActive.tab, history, 'reentrant events should leave history as the active tab');
 });
 
 test('preview history promotion skips tabs without a current editor group', async () => {
