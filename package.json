@@ -24,7 +24,7 @@
       }
     },
     "commands": [
-      { "command": "codexSessionTabs.newTab", "title": "Codex: New Codex Tab", "icon": "$(add)" },
+      { "command": "codexSessionTabs.newTab", "title": "Codex: New Codex Tab", "icon": "$(sparkle-filled)" },
       { "command": "codexSessionTabs.focusTab", "title": "Codex Sessions: Focus Tab" },
       { "command": "codexSessionTabs.renameTab", "title": "Codex Sessions: Rename List Label", "icon": "$(edit)" },
       { "command": "codexSessionTabs.reopenSession", "title": "Codex Sessions: Reopen Conversation", "icon": "$(history)" }

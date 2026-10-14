@@ -31,6 +31,27 @@ function findCodexExtension() {
   return undefined;
 }
 
+function findCodexDependencies(codexPath) {
+  const codexPackage = JSON.parse(fs.readFileSync(path.join(codexPath, 'package.json'), 'utf8'));
+  const root = path.dirname(codexPath);
+  return (codexPackage.extensionDependencies || []).map(id => {
+    const candidates = fs.readdirSync(root)
+      .filter(name => name.startsWith(`${id}-`))
+      .map(name => path.join(root, name))
+      .filter(candidate => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(candidate, 'package.json'), 'utf8')).version === codexPackage.version;
+        } catch {
+          return false;
+        }
+      });
+    if (candidates.length !== 1) {
+      throw new Error(`Expected one installed ${id} dependency matching Codex ${codexPackage.version}, found ${candidates.length}.`);
+    }
+    return candidates[0];
+  });
+}
+
 function resolveMacExecutable(expected) {
   if (process.platform !== 'darwin' || fs.existsSync(expected)) return expected;
   // Newer macOS archives can rename the app executable while test-electron
@@ -66,7 +87,7 @@ async function main() {
   try {
     await runTests({
       ...options,
-      extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath],
+      extensionDevelopmentPath: [path.resolve(__dirname, '..'), codexPath, ...findCodexDependencies(codexPath)],
       extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
       launchArgs: [
         path.resolve(__dirname, '..'),
@@ -74,7 +95,13 @@ async function main() {
         '--skip-welcome',
         ...(process.platform === 'darwin' ? [`--user-data-dir=/tmp/yuhan-vscode-${process.pid}`] : [])
       ],
-      extensionTestsEnv: { CODEX_TABS_TEST: '1', CODEX_TABS_TEST_MARKER: markerPath }
+      extensionTestsEnv: {
+        CODEX_TABS_TEST: '1',
+        CODEX_TABS_TEST_MARKER: markerPath,
+        ...Object.fromEntries(['CODEX_TEST_SESSION_ID', 'CODEX_TEST_SESSION_ID_SECOND', 'CODEX_EXPECT_SESSION_TITLE']
+          .filter(name => process.env[name] !== undefined)
+          .map(name => [name, process.env[name]]))
+      }
     });
     if (!fs.existsSync(markerPath)) throw new Error('Integration assertions did not complete. See the extension host output above.');
   } finally {

@@ -99,7 +99,7 @@ async function run() {
       assert.equal(config.get('replaceNewTabOnHistoryOpen'), true,
         'an unset setting should use the enabled default');
       await vscode.commands.executeCommand('codexSessionTabs.focusTab', first.toString());
-      await vscode.commands.executeCommand('vscode.open', existingSessionUri, { preview: false });
+      await vscode.commands.executeCommand('vscode.open', existingSessionUri);
       for (let attempt = 0; attempt < 50; attempt++) {
         const opened = codexTabs();
         if (opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString()) &&
@@ -110,6 +110,13 @@ async function run() {
       assert.ok(defaultHistoryTab, 'existing Codex session should open');
       assert.ok(!codexTabs().some(tab => tab.input.uri.toString() === first.toString()),
         'the enabled default should replace the active managed new tab');
+      assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
+        'replacing one managed flow must leave another managed tab open');
+      const flowUris = new Set([first.toString(), second.toString(), existingSessionUri.toString()]);
+      const retainedFlowTabs = codexTabs().filter(tab => flowUris.has(tab.input.uri.toString()));
+      assert.equal(retainedFlowTabs.length, 2,
+        'one selected history URI and the independent managed URI should remain across the three tracked inputs');
+      console.log(`CODEX_KEY_RESULT inputs=${flowUris.size} retained=${retainedFlowTabs.length}`);
       if (process.env.CODEX_EXPECT_SESSION_TITLE === '1') {
         for (let attempt = 0; attempt < 50 && defaultHistoryTab.label === 'Codex'; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -117,11 +124,33 @@ async function run() {
         assert.notEqual(defaultHistoryTab.label, 'Codex', 'an existing conversation should show its summary as the tab title');
         assert.ok(defaultHistoryTab.label.length > 3, 'the conversation title should be descriptive');
       }
-      await vscode.window.tabGroups.close(defaultHistoryTab);
+
+      if (process.env.CODEX_TEST_SESSION_ID_SECOND) {
+        assert.notEqual(process.env.CODEX_TEST_SESSION_ID_SECOND, process.env.CODEX_TEST_SESSION_ID,
+          'chained history coverage requires two distinct saved sessions');
+        const chainedSessionUri = vscode.Uri.parse(`openai-codex://route/local/${process.env.CODEX_TEST_SESSION_ID_SECOND}`);
+        await vscode.commands.executeCommand('vscode.open', chainedSessionUri);
+        for (let attempt = 0; attempt < 50; attempt++) {
+          const opened = codexTabs();
+          if (opened.some(tab => tab.input.uri.toString() === chainedSessionUri.toString()) &&
+              !opened.some(tab => tab.input.uri.toString() === existingSessionUri.toString())) break;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.ok(codexTabs().some(tab => tab.input.uri.toString() === chainedSessionUri.toString()),
+          'a subsequent saved conversation should open');
+        assert.ok(!codexTabs().some(tab => tab.input.uri.toString() === existingSessionUri.toString()),
+          'the next history selection should replace the exact history tab adopted by the first');
+        assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
+          'a chained history selection must leave a separate managed flow untouched');
+        const chainedHistoryTab = codexTabs().find(tab => tab.input.uri.toString() === chainedSessionUri.toString());
+        await vscode.window.tabGroups.close(chainedHistoryTab);
+      } else {
+        await vscode.window.tabGroups.close(defaultHistoryTab);
+      }
 
       await config.update('replaceNewTabOnHistoryOpen', false, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand('codexSessionTabs.focusTab', second.toString());
-      await vscode.commands.executeCommand('vscode.open', existingSessionUri, { preview: false });
+      await vscode.commands.executeCommand('vscode.open', existingSessionUri);
       assert.ok(codexTabs().some(tab => tab.input.uri.toString() === second.toString()),
         'a persisted false preference should retain the active new tab');
       const safeHistoryTab = codexTabs().find(tab => tab.input.uri.toString() === existingSessionUri.toString());
