@@ -189,6 +189,11 @@ async function handleWebviewMessage(panel, message, extensionUri) {
     }
     const result = await api.request('turn/start', { threadId: state.threadId, input: [{ type: 'text', text: prompt }] });
     state.turnId = result?.turn?.id || null;
+    if (state.title.startsWith('Codex · ')) {
+      state.title = prompt.replace(/\s+/g, ' ').slice(0, 52);
+      panel.title = state.title;
+      post(panel, { type: 'session', threadId: state.threadId, cwd: state.cwd, title: state.title });
+    }
     post(panel, { type: 'sent', text: prompt, turnId: state.turnId });
   } else if (message.type === 'stop') {
     if (state.threadId && state.turnId) {

@@ -2,6 +2,15 @@
 
 Open several independent Codex conversations as VS Code editor tabs. This is an independent community extension and is not affiliated with OpenAI.
 
+## 한국어 빠른 시작
+
+1. 데스크톱 VS Code 1.95 이상과 Codex CLI를 설치하고 `codex login`을 실행합니다.
+2. 프로젝트 폴더를 연 뒤 명령 팔레트에서 **Codex Session Tabs: New Chat Tab**을 실행합니다. 반복할 때마다 별도 탭이 열립니다.
+3. 이전 대화는 **Codex Session Tabs: Open Saved Chat**으로 다시 엽니다.
+4. 탭을 옆 편집기 그룹으로 끌면 여러 대화를 동시에 볼 수 있습니다.
+
+현재 공개 전 시험 버전입니다. Windows에서만 직접 검증했고, macOS와 Linux 검증은 저장소 CI 실행 후 확인할 예정입니다. 모든 VS Code/Codex 버전의 호환성을 보장하지는 않습니다.
+
 ## Requirements
 
 - Desktop VS Code 1.95 or newer on Windows, macOS, or Linux.
