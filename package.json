@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
   "description": "Open and organize official Codex chats in editor tabs.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "youngunghan",
   "repository": { "type": "git", "url": "https://github.com/youngunghan/codex-session-tabs.git" },
   "license": "MIT",
