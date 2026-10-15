@@ -6,7 +6,7 @@ Open independent Codex chats in VS Code or Cursor editor tabs. Each tab is a web
 
 1. Install Python 3.11–3.13 and sign in to Codex on the same machine or Remote SSH host where this extension runs. Existing Codex authentication is reused by the SDK.
 2. Install this extension. In a Remote SSH window, install it on the remote workspace host.
-3. Click the sparkle icon in an editor title bar, run **Codex: New Codex Tab**, or press `Ctrl+Alt+N`.
+3. Click the Codex swirl icon in an editor title bar, run **Codex: New Codex Tab**, or press `Ctrl+Alt+N`.
 4. In the new tab, click **Set up Codex SDK**. The extension creates a private Python environment in VS Code's extension global storage and installs the pinned SDK and its matching runtime. A notification shows progress. If Python is not on `PATH`, set `codexSessionTabs.pythonPath` to its executable and retry.
 5. Send a message. The tab stays provisional until this first send; it then keeps the returned Codex thread ID. The first prompt becomes an initial thread name. Further messages continue that thread.
 
