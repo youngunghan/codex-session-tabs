@@ -5,10 +5,11 @@ const { EventEmitter } = require('node:events');
 const test = require('node:test');
 const { SdkRuntime } = require('../src/runtime');
 
-function fakeRuntime(events, exitCode = 0) {
+function fakeRuntime(events, exitCode = 0, options = {}) {
   let stdinText = '';
   const runtime = new SdkRuntime({ globalStorageUri: { fsPath: '/storage' }, extensionPath: '/extension' },
-    { workspace: { getConfiguration: () => ({ get: () => '' }) } }, () => {
+    { workspace: { getConfiguration: () => ({ get: () => '' }) } }, (_command, _args, spawnOptions) => {
+      options.onSpawn?.(spawnOptions);
       const child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
@@ -18,7 +19,14 @@ function fakeRuntime(events, exitCode = 0) {
         if (stdinText.split('\n').filter(Boolean).length === 1) {
           const request = JSON.parse(stdinText.trim());
           queueMicrotask(() => {
-            for (const event of events) child.stdout.emit('data', `${JSON.stringify({ requestId: request.requestId, ...event })}\n`);
+            for (const event of events) {
+              const bytes = Buffer.from(`${JSON.stringify({ requestId: request.requestId, ...event })}\n`, 'utf8');
+              if (options.splitUtf8 && bytes.includes(Buffer.from('한')[0])) {
+                const split = bytes.indexOf(Buffer.from('한')[0]);
+                child.stdout.emit('data', bytes.subarray(0, split + 1));
+                child.stdout.emit('data', bytes.subarray(split + 1));
+              } else child.stdout.emit('data', bytes);
+            }
             child.emit('close', exitCode);
           });
         }
@@ -36,6 +44,28 @@ test('bridge accepts one matching terminal event after nonterminal thread and tu
     { kind: 'completed', status: 'completed' }]);
   await runtime.run({ op: 'send', text: 'Hello' }, event => seen.push(event.kind)).promise;
   assert.deepEqual(seen, ['thread', 'turn', 'completed']);
+});
+
+test('bridge decodes Korean and emoji across UTF-8 byte boundaries and requests Python UTF-8', async () => {
+  const seen = [];
+  let options;
+  const runtime = fakeRuntime([{ kind: 'item', role: 'assistant', text: '한😀' }, { kind: 'completed' }], 0,
+    { splitUtf8: true, onSpawn: value => { options = value; } });
+  await runtime.run({ op: 'send', text: '한😀' }, event => seen.push(event)).promise;
+  assert.equal(seen[0].text, '한😀');
+  assert.equal(options.env.PYTHONUTF8, '1');
+  assert.equal(options.env.PYTHONIOENCODING, 'utf-8');
+});
+
+test('bridge preserves callback errors instead of reporting invalid SDK JSON', async () => {
+  const runtime = fakeRuntime([{ kind: 'item', role: 'assistant', text: 'valid JSON' }]);
+  await assert.rejects(runtime.run({ op: 'send' }, () => { throw new Error('application consumer failed'); }).promise,
+    error => error.message === 'application consumer failed');
+});
+
+test('configured Python executable is restricted to machine settings', () => {
+  const config = require('../package.json').contributes.configuration.properties['codexSessionTabs.pythonPath'];
+  assert.equal(config.scope, 'machine');
 });
 
 test('bridge rejects process exit without a terminal event', async () => {

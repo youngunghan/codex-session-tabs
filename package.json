@@ -38,6 +38,7 @@
         "codexSessionTabs.pythonPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "Python 3.11\u20133.13 executable used to create the private Codex SDK environment on first setup. Empty uses python3 (python on Windows)."
         }
       }

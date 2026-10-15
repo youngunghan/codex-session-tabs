@@ -14,6 +14,14 @@ from typing import Any
 from openai_codex import ApprovalMode, AsyncCodex, Sandbox
 
 REQUEST_ID = ""
+MAX_TOOL_TEXT = 32_768
+MAX_TEXT_CHUNK = 4_096
+MAX_JSON_CHUNK_BYTES = 64 * 1_024
+
+
+def clipped(value: Any, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "\n[output truncated]"
 
 
 def emit(kind: str, **fields: Any) -> None:
@@ -32,9 +40,9 @@ def settings(request: dict[str, Any]) -> tuple[Sandbox, ApprovalMode]:
 def thread_row(thread: Any) -> dict[str, Any]:
     return {
         "id": thread.id,
-        "name": thread.name,
-        "preview": thread.preview,
-        "cwd": thread.cwd.root,
+        "name": clipped(thread.name or "", 200),
+        "preview": clipped(thread.preview or "", 500),
+        "cwd": clipped(thread.cwd.root or "", 4_096),
         "updatedAt": thread.updated_at,
     }
 
@@ -48,21 +56,36 @@ def item_row(item: Any) -> dict[str, str] | None:
     if kind == "agentMessage":
         return {"role": "assistant", "text": item.text}
     if kind == "commandExecution":
-        return {"role": "tool", "text": f"$ {item.command}\n{item.aggregated_output or ''}"}
+        return {"role": "tool", "text": clipped(f"$ {item.command}\n{item.aggregated_output or ''}", MAX_TOOL_TEXT)}
     if kind == "fileChange":
         changes = [getattr(change, "path", "") for change in item.changes]
-        return {"role": "tool", "text": "Files changed: " + ", ".join(str(value) for value in changes)}
+        return {"role": "tool", "text": clipped("Files changed: " + ", ".join(str(value) for value in changes), MAX_TOOL_TEXT)}
     return None
 
 
-def history_rows(thread: Any) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
+def history_rows(thread: Any):
     for turn in thread.turns:
         for item in turn.items:
             row = item_row(item)
             if row:
-                rows.append(row)
-    return rows
+                yield row
+
+
+def emit_history(thread: Any) -> None:
+    batch: list[dict[str, Any]] = []
+    size = 0
+    for row in history_rows(thread):
+        text = row["text"]
+        for offset in range(0, max(1, len(text)), MAX_TEXT_CHUNK):
+            part = {"role": row["role"], "text": text[offset:offset + MAX_TEXT_CHUNK], "continuation": offset > 0}
+            part_size = len(json.dumps(part, ensure_ascii=False).encode("utf-8"))
+            if batch and size + part_size > MAX_JSON_CHUNK_BYTES:
+                emit("loadedChunk", messages=batch)
+                batch, size = [], 0
+            batch.append(part)
+            size += part_size
+    if batch:
+        emit("loadedChunk", messages=batch)
 
 
 async def resume(codex: AsyncCodex, request: dict[str, Any]) -> Any:
@@ -136,7 +159,9 @@ async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
     watch_stop(turn)
     async for event in turn.stream():
         if event.method == "item/agentMessage/delta":
-            emit("delta", itemId=event.payload.item_id, text=event.payload.delta)
+            delta = event.payload.delta
+            for offset in range(0, len(delta), MAX_TEXT_CHUNK):
+                emit("delta", itemId=event.payload.item_id, text=delta[offset:offset + MAX_TEXT_CHUNK])
         elif event.method == "item/completed":
             row = item_row(event.payload.item)
             if row and row["role"] != "user":
@@ -154,7 +179,8 @@ async def run(request: dict[str, Any]) -> None:
         elif op == "load":
             thread = await resume(codex, request)
             data = await read_thread(thread)
-            emit("loaded", thread=thread_row(data), messages=history_rows(data))
+            emit_history(data)
+            emit("loaded", thread=thread_row(data))
         elif op == "rename":
             thread = await resume(codex, request)
             await thread.set_name(request["name"])

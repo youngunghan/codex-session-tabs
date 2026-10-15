@@ -50,8 +50,9 @@ function fixture() {
         : request.op === 'list'
           ? [{ kind: 'list', threads: [{ id: THREAD_B, name: 'Earlier', cwd: '/workspace', preview: 'old' }], nextCursor: null }]
           : request.op === 'load'
-            ? [{ kind: 'loaded', thread: { id: request.threadId, name: 'Earlier', preview: 'old' },
-              messages: [{ role: 'user', text: 'old' }, { role: 'assistant', text: 'answer' }] }]
+            ? [{ kind: 'loadedChunk', messages: [{ role: 'user', text: 'old', continuation: false },
+              { role: 'assistant', text: 'answer', continuation: false }] },
+            { kind: 'loaded', thread: { id: request.threadId, name: 'Earlier', preview: 'old' } }]
             : [{ kind: 'renamed', threadId: request.threadId, name: request.name }];
       const promise = Promise.resolve().then(() => { events.forEach(onEvent); });
       return { promise, stop() {}, kill() {} };
@@ -115,10 +116,25 @@ test('history switch and rename update the real thread and current editor title'
   await tabs.handle(state, { type: 'select', threadId: THREAD_B });
   assert.equal(state.threadId, THREAD_B);
   assert.equal(panel.title, 'Earlier');
-  assert.ok(posted.some(event => event.type === 'loaded' && event.messages.length === 2));
+  assert.ok(posted.some(event => event.type === 'loadedChunk' && event.messages.length === 2));
+  assert.ok(posted.findIndex(event => event.type === 'loaded') < posted.findIndex(event => event.type === 'loadedChunk'),
+    'the webview must clear the old conversation before appending history chunks');
   await tabs.handle(state, { type: 'rename', name: 'Important work' });
   assert.equal(panel.title, 'Important work');
   assert.ok(calls.some(call => call.op === 'rename' && call.threadId === THREAD_B && call.name === 'Important work'));
+});
+
+test('switching history threads resets write permission before the next send', async () => {
+  const { tabs, state, calls, posted, api } = fixture();
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  assert.equal(state.mode, 'workspace_write');
+  await tabs.handle(state, { type: 'history' });
+  await tabs.handle(state, { type: 'select', threadId: THREAD_B });
+  assert.equal(state.mode, 'read_only');
+  assert.ok(posted.some(event => event.type === 'mode' && event.mode === 'read_only'));
+  await tabs.handle(state, { type: 'send', text: 'continue selected thread' });
+  assert.equal(calls.findLast(call => call.op === 'send').mode, 'read_only');
 });
 
 test('history pagination passes the SDK cursor and appends the next page', async () => {

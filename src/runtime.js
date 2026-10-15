@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { StringDecoder } = require('node:string_decoder');
 
 const SDK_VERSION = '0.162.1';
 
@@ -64,7 +65,11 @@ class SdkRuntime {
   run(request, onEvent) {
     if (!this.ready) throw new Error('Set up the Codex SDK first.');
     const requestId = randomUUID();
-    const child = this.spawnProcess(this.python, ['-u', this.helper], { cwd: request.cwd || this.context.extensionPath, windowsHide: true });
+    const child = this.spawnProcess(this.python, ['-u', this.helper], {
+      cwd: request.cwd || this.context.extensionPath, windowsHide: true,
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+    });
+    const decoder = new StringDecoder('utf8');
     let stdout = '';
     let stderr = '';
     let eventError;
@@ -73,23 +78,35 @@ class SdkRuntime {
     let stopTimer;
     const promise = new Promise((resolve, reject) => {
       child.stdout.on('data', chunk => {
-        stdout += chunk;
-        if (stdout.length > 8 * 1024 * 1024) { child.kill(); reject(new Error('Codex SDK output exceeded 8 MB.')); return; }
+        stdout += decoder.write(chunk);
+        if (Buffer.byteLength(stdout, 'utf8') > 8 * 1024 * 1024) {
+          eventError = new Error('Codex SDK output exceeded 8 MB.');
+          child.kill();
+          return;
+        }
         let newline;
         while ((newline = stdout.indexOf('\n')) >= 0) {
           const line = stdout.slice(0, newline);
           stdout = stdout.slice(newline + 1);
           if (!line.trim()) continue;
+          let event;
           try {
-            const event = JSON.parse(line);
+            event = JSON.parse(line);
+          } catch (error) {
+            eventError = new Error(`Invalid Codex SDK response: ${error.message}`);
+            child.kill();
+            return;
+          }
+          try {
             if (event.requestId !== requestId) throw new Error('Mismatched Codex SDK request ID');
             if (['list', 'loaded', 'renamed', 'completed', 'error'].includes(event.kind)) terminalCount++;
             if (terminalCount > 1) throw new Error('Multiple Codex SDK terminal events');
             if (event.kind === 'error') eventError = new Error(event.message);
             onEvent(event);
           } catch (error) {
-            eventError = new Error(`Invalid Codex SDK response: ${error.message}`);
+            eventError = error;
             child.kill();
+            return;
           }
         }
       });
@@ -98,6 +115,8 @@ class SdkRuntime {
       child.on('close', code => {
         closed = true;
         clearTimeout(stopTimer);
+        stdout += decoder.end();
+        if (stdout.trim() && !eventError) eventError = new Error('Codex SDK ended with an incomplete response.');
         if (code === 0 && !eventError && terminalCount === 1) resolve();
         else if (code === 0 && terminalCount !== 1) reject(new Error('Codex SDK ended without exactly one terminal event.'));
         else reject(eventError || new Error(stderr || `Codex SDK exited ${code}`));

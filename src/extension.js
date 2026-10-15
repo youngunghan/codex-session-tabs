@@ -157,12 +157,15 @@ class ChatTabs {
 
   async load(state, threadId) {
     let loaded;
+    const chunks = [];
     await this.run(state, { op: 'load', threadId, mode: 'read_only' }, event => {
       if (event.kind === 'loaded') loaded = event;
+      if (event.kind === 'loadedChunk') chunks.push(event.messages);
     });
     if (!loaded) throw new Error('Codex did not return conversation history.');
     this.setThread(state, loaded.thread.id, loaded.thread.name || loaded.thread.preview?.split('\n')[0]?.slice(0, 60));
-    this.post(state, { type: 'loaded', threadId: state.threadId, title: state.title, messages: loaded.messages });
+    this.post(state, { type: 'loaded', threadId: state.threadId, title: state.title, messages: loaded.messages || [] });
+    for (const messages of chunks) this.post(state, { type: 'loadedChunk', messages });
     this.post(state, { type: 'status', text: 'Conversation loaded · read only' });
   }
 
@@ -239,9 +242,9 @@ class ChatTabs {
           { modal: true }, 'Open read only'
         );
         if (accepted !== 'Open read only') return;
-        state.mode = 'read_only';
-        this.post(state, { type: 'mode', mode: state.mode });
       }
+      state.mode = 'read_only';
+      this.post(state, { type: 'mode', mode: state.mode });
       await this.load(state, message.threadId);
       return;
     }

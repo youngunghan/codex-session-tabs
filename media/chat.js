@@ -150,6 +150,12 @@
         persist();
         setBusy(false);
         break;
+      case 'loadedChunk':
+        for (const row of message.messages) {
+          if (row.continuation && messages.lastElementChild) messages.lastElementChild.textContent += row.text;
+          else addMessage(row.role, row.text);
+        }
+        break;
       case 'reset':
         state.threadId = null;
         state.title = 'New Codex chat';
