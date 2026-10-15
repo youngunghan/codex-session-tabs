@@ -118,8 +118,8 @@ test('revocation aborts immediately without the cooperative ten-second stop path
 test('hard abort targets the Unix process group and Windows process tree', () => {
   const signals = [];
   abortProcessTree({ pid: 123, kill() { throw new Error('single process kill used'); } }, 'darwin',
-    () => { throw new Error('taskkill used on Unix'); }, (...args) => { signals.push(args); });
-  assert.deepEqual(signals, [[-123, 'SIGKILL']]);
+    () => { throw new Error('taskkill used on Unix'); }, (...args) => { signals.push(args); }, () => '');
+  assert.deepEqual(signals, [[-123, 'SIGSTOP'], [-123, 'SIGKILL']]);
   let command;
   abortProcessTree({ pid: 456, kill() { throw new Error('single process kill used'); } }, 'win32',
     (file, args, options) => { command = { file, args, options }; return { on() {} }; });
@@ -144,6 +144,32 @@ test('Unix hard abort prevents a descendant from writing after revocation', { sk
     await new Promise(resolve => setTimeout(resolve, 700));
     await assert.rejects(fs.stat(target), error => error.code === 'ENOENT');
   } finally {
+    try { abortProcessTree(child); } catch { /* Already stopped. */ }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('Unix hard abort catches descendants that start their own process group', { skip: process.platform === 'win32' }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-tabs-setsid-'));
+  const target = path.join(dir, 'late-write');
+  const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(target)}, 'escaped'), 500); setInterval(() => {}, 1000)`;
+  const parent = `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: 'ignore' }); process.stdout.write(String(child.pid) + '\\n'); setInterval(() => {}, 1000)`;
+  const child = spawn(process.execPath, ['-e', parent], { detached: true });
+  let descendantPid;
+  try {
+    const ready = await new Promise((resolve, reject) => {
+      child.stdout.once('data', resolve);
+      child.once('error', reject);
+    });
+    descendantPid = Number(String(ready).trim());
+    assert.ok(descendantPid > 0);
+    abortProcessTree(child);
+    await new Promise(resolve => child.once('close', resolve));
+    await new Promise(resolve => setTimeout(resolve, 700));
+    await assert.rejects(fs.stat(target), error => error.code === 'ENOENT');
+    assert.throws(() => process.kill(descendantPid, 0), error => error.code === 'ESRCH');
+  } finally {
+    try { process.kill(descendantPid, 'SIGKILL'); } catch { /* Already stopped. */ }
     try { abortProcessTree(child); } catch { /* Already stopped. */ }
     await fs.rm(dir, { recursive: true, force: true });
   }

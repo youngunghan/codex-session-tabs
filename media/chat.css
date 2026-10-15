@@ -5,7 +5,9 @@ body { margin: 0; font: var(--vscode-font-weight) var(--vscode-font-size) var(--
 button, select, textarea { font: inherit; color: var(--vscode-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
 button { cursor: pointer; padding: 5px 9px; }
 button:disabled { opacity: .5; cursor: default; }
-#mode { padding: 5px; margin-left: auto; }
+.modeControl { display: flex; flex-direction: column; gap: 3px; margin-left: auto; font-size: .9em; }
+.modeControl small { max-width: 240px; color: var(--vscode-descriptionForeground); }
+#mode { padding: 5px; }
 #status { min-height: 1em; padding: 7px 12px; color: var(--vscode-descriptionForeground); }
 #status.error { color: var(--vscode-errorForeground); }
 #renamePane { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); }

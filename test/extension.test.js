@@ -17,7 +17,9 @@ function loadExtension() {
     ViewColumn: { Active: 1 },
     workspace: { workspaceFolders: [{ uri: { fsPath: '/workspace', toString: () => 'file:///workspace' } }], isTrusted: true,
       getConfiguration: () => ({ get: () => '' }) },
+    commands: { registerCommand: () => ({ dispose() {} }) },
     window: { showWarningMessage: async () => 'Open read only',
+      registerWebviewPanelSerializer: () => ({ dispose() {} }),
       withProgress: async (_options, callback) => callback({ report() {} }) },
     ProgressLocation: { Notification: 1 }
   };
@@ -70,7 +72,7 @@ function fixture() {
       postMessage: message => { posted.push(message); }, onDidReceiveMessage() {} }, onDidDispose() {} };
   tabs.attach(panel);
   const state = [...tabs.panels][0];
-  return { tabs, state, panel, calls, posted, api, runtime, context, stored };
+  return { tabs, state, panel, calls, posted, api, runtime, context, stored, extension };
 }
 
 test('new Codex command and editor tab use packaged light and dark icons', async () => {
@@ -82,6 +84,18 @@ test('new Codex command and editor tab use packaged light and dark icons', async
     assert.equal(panel.iconPath[theme].fsPath, `/extension/${command.icon[theme]}`);
     assert.match(await fs.readFile(iconFile, 'utf8'), /<svg[^>]+viewBox="0 0 16 16"/);
   }
+});
+
+test('extension deactivation hard-aborts every active SDK operation synchronously', () => {
+  const { extension, context, panel } = fixture();
+  const tabs = extension.activate(context);
+  tabs.attach(panel);
+  const state = [...tabs.panels][0];
+  let aborts = 0;
+  state.operation = { abort() { aborts++; }, stop() { throw new Error('cooperative stop is too slow'); } };
+  extension.deactivate();
+  assert.equal(aborts, 1);
+  assert.equal(state.operation !== null, true);
 });
 
 test('webview requests reject malformed IDs, dangerous modes, and empty messages', () => {
@@ -195,6 +209,27 @@ test('stream crash after turn start retains the draft and flags uncertain outcom
   assert.ok(posted.some(event => event.type === 'status' && /outcome unknown/.test(event.text)));
   assert.equal(failure.outcomeUnknown, true);
 });
+
+for (const status of ['failed', 'interrupted']) {
+  test(`terminal ${status} turn retains its prompt and thread ID`, async () => {
+    const { tabs, state, posted, runtime } = fixture();
+    runtime.run = (_request, onEvent) => ({
+      promise: Promise.resolve().then(() => {
+        onEvent({ kind: 'thread', threadId: THREAD_A });
+        onEvent({ kind: 'turn', turnId: 'turn-1' });
+        onEvent({ kind: 'completed', status });
+        onEvent({ kind: 'stopIgnored' });
+      }), stop() {}
+    });
+    await assert.rejects(tabs.handle(state, { type: 'send', text: 'Retain this prompt' }),
+      new RegExp(`Codex turn ${status}`));
+    assert.equal(state.threadId, THREAD_A);
+    assert.equal(state.busy, false);
+    assert.ok(posted.some(event => event.type === 'restoreDraft' && event.text === 'Retain this prompt'));
+    assert.ok(posted.some(event => event.type === 'status' && event.error && event.text === `Turn ${status}.`));
+    assert.equal(posted.some(event => event.type === 'status' && /already completed before the stop/.test(event.text)), false);
+  });
+}
 
 test('write mode needs explicit confirmation and stays scoped to its existing tab', async () => {
   const { tabs, state, api, calls } = fixture();
@@ -442,6 +477,8 @@ test('webview uses a restrictive CSP and text rendering for SDK output', async (
   const { panel } = fixture();
   assert.match(panel.webview.html, /default-src 'none'/);
   assert.match(panel.webview.html, /connect-src 'none'/);
+  assert.match(panel.webview.html, /Read only \(local files\)/);
+  assert.match(panel.webview.html, /external tools may access or change external services/);
   const script = await fs.readFile(path.join(__dirname, '..', 'media', 'chat.js'), 'utf8');
   assert.match(script, /node\.textContent = text/);
   assert.doesNotMatch(script, /innerHTML/);

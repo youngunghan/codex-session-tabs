@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import subprocess
 import sys
 import threading
 from typing import Any
@@ -17,6 +20,51 @@ REQUEST_ID = ""
 MAX_TOOL_TEXT = 32_768
 MAX_TEXT_CHUNK = 4_096
 MAX_JSON_CHUNK_BYTES = 64 * 1_024
+
+
+def abort_on_parent_eof() -> None:
+    """Stop SDK descendants if the extension host disappears mid-turn."""
+    own_pid = os.getpid()
+    if os.name == "nt":
+        subprocess.Popen(["taskkill", "/PID", str(own_pid), "/T", "/F"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        os._exit(1)
+    try:
+        rows = subprocess.check_output(["ps", "-A", "-o", "pid=,ppid="],
+                                       text=True, timeout=1).splitlines()
+        children: dict[int, list[int]] = {}
+        for row in rows:
+            columns = row.split()
+            if len(columns) != 2 or not all(part.isdecimal() for part in columns):
+                continue
+            pid, parent = map(int, columns)
+            children.setdefault(parent, []).append(pid)
+        queue = [own_pid]
+        found: list[int] = []
+        for pid in queue:
+            for child in children.get(pid, []):
+                if child not in queue:
+                    queue.append(child)
+                    found.append(child)
+        for pid in found:
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                pass
+        for pid in reversed(found):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    except Exception:
+        pass  # The helper still terminates even if process enumeration fails.
+    try:
+        if os.getpgrp() == own_pid:
+            os.killpg(own_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os._exit(1)
 
 
 def clipped(value: Any, limit: int) -> str:
@@ -109,35 +157,53 @@ async def read_thread(thread: Any) -> Any:
         return (await thread.read(include_turns=False)).thread
 
 
-def watch_stop(turn: Any) -> None:
+def watch_stop(turn: Any) -> asyncio.Event:
     # A daemon reader avoids blocking asyncio.run's executor shutdown when the
     # extension keeps stdin open while a completed turn exits.
     loop = asyncio.get_running_loop()
+    done = asyncio.Event()
 
     async def interrupt() -> None:
-        try:
-            await turn.interrupt()
-            emit("stopping")
-        except Exception as error:
-            if "no active turn to interrupt" in str(error).lower():
-                emit("stopIgnored")
-            else:
-                emit("stopError", message=str(error))
+        if done.is_set():
+            emit("stopIgnored")
+            return
+        emit("stopping")
+        deadline = loop.time() + 5
+        while not done.is_set():
+            try:
+                await turn.interrupt()
+                return
+            except Exception as error:
+                if "no active turn to interrupt" not in str(error).lower():
+                    emit("stopError", message=str(error))
+                    return
+                if loop.time() >= deadline:
+                    emit("stopError", message="Turn did not become interruptible within five seconds.")
+                    return
+                try:
+                    await asyncio.wait_for(done.wait(), min(0.1, deadline - loop.time()))
+                except asyncio.TimeoutError:
+                    pass
+        emit("stopIgnored")
 
     def reader() -> None:
+        stop_requested = False
         for line in sys.stdin:
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if message.get("op") == "stop":
+            if message.get("op") == "stop" and not stop_requested:
+                stop_requested = True
                 try:
                     loop.call_soon_threadsafe(lambda: asyncio.create_task(interrupt()))
                 except RuntimeError:
                     pass  # The turn finished as the stop request arrived.
-                return
+        if not done.is_set():
+            abort_on_parent_eof()
 
     threading.Thread(target=reader, daemon=True).start()
+    return done
 
 
 async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
@@ -156,18 +222,21 @@ async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
         request["text"], cwd=request.get("cwd"), sandbox=sandbox, approval_mode=approval,
     )
     emit("turn", turnId=turn.id)
-    watch_stop(turn)
-    async for event in turn.stream():
-        if event.method == "item/agentMessage/delta":
-            delta = event.payload.delta
-            for offset in range(0, len(delta), MAX_TEXT_CHUNK):
-                emit("delta", itemId=event.payload.item_id, text=delta[offset:offset + MAX_TEXT_CHUNK])
-        elif event.method == "item/completed":
-            row = item_row(event.payload.item)
-            if row and row["role"] != "user":
-                emit("item", itemId=event.payload.item.root.id, **row)
-        elif event.method == "turn/completed":
-            emit("completed", status=event.payload.turn.status.value)
+    done = watch_stop(turn)
+    try:
+        async for event in turn.stream():
+            if event.method == "item/agentMessage/delta":
+                delta = event.payload.delta
+                for offset in range(0, len(delta), MAX_TEXT_CHUNK):
+                    emit("delta", itemId=event.payload.item_id, text=delta[offset:offset + MAX_TEXT_CHUNK])
+            elif event.method == "item/completed":
+                row = item_row(event.payload.item)
+                if row and row["role"] != "user":
+                    emit("item", itemId=event.payload.item.root.id, **row)
+            elif event.method == "turn/completed":
+                emit("completed", status=event.payload.turn.status.value)
+    finally:
+        done.set()
 
 
 async def run(request: dict[str, Any]) -> None:

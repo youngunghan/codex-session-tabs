@@ -13,6 +13,7 @@
   const renderedItems = new Map();
 
   function persist() {
+    state.draft = draft.value;
     vscode.setState({ threadId: state.threadId || null, title: state.title || 'New Codex chat',
       panelId: state.panelId, hostKey: state.hostKey, workspaceKey: state.workspaceKey,
       draft: draft.value, failedPrompt: state.failedPrompt || null });
@@ -123,7 +124,7 @@
         $('setupPane').hidden = ready;
         $('mode').value = message.mode;
         $('mode').title = message.trusted ? '' : 'Workspace trust and an open folder are required for writes';
-        setStatus(ready ? 'Read only · approval requests denied' : 'Set up the official Codex Python SDK to begin.');
+        setStatus(ready ? 'Local files read only · approval requests denied' : 'Set up the official Codex Python SDK to begin.');
         setBusy(!!message.busy);
         persist();
         break;
@@ -191,8 +192,8 @@
       case 'mode':
         $('mode').value = message.mode;
         setStatus(message.mode === 'workspace_write'
-          ? 'Workspace writes enabled · approval requests denied'
-          : 'Read only · approval requests denied');
+          ? 'Workspace file writes enabled · approval requests denied'
+          : 'Local files read only · approval requests denied');
         break;
       case 'restoreDraft':
         if (!draft.value || draft.value === message.text) draft.value = message.text;

@@ -8,6 +8,7 @@ const { html } = require('./webview');
 
 const VIEW_TYPE = 'codexSessionTabs.chat';
 const COMMAND_ID = 'codexSessionTabs.newTab';
+let activeTabs;
 
 function workspacePath() {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || undefined;
@@ -48,6 +49,14 @@ class ChatTabs {
     });
     this.attach(panel);
     return panel;
+  }
+
+  shutdown() {
+    for (const state of this.panels) {
+      if (!state.operation) continue;
+      try { state.operation.abort(); }
+      catch (error) { console.error('Codex chat: failed to abort active turn during shutdown', error); }
+    }
   }
 
   attach(panel, saved = {}) {
@@ -349,7 +358,7 @@ class ChatTabs {
         throw new Error('Workspace write approval expired. Reopen and trust this tab’s workspace, then allow writes again.');
       }
       let started = false;
-      let completed = false;
+      let terminalStatus;
       try {
         await this.run(state, { op: 'send', threadId: state.threadId, text: message.text, mode: state.mode }, event => {
           if (event.kind === 'thread') this.setThread(state, event.threadId, message.text.trim().split('\n')[0].slice(0, 60));
@@ -361,17 +370,20 @@ class ChatTabs {
           if (event.kind === 'delta') this.post(state, { type: 'delta', text: event.text, itemId: event.itemId });
           if (event.kind === 'item') this.post(state, { type: 'item', role: event.role, text: event.text, itemId: event.itemId });
           if (event.kind === 'stopping') this.post(state, { type: 'status', text: 'Stopping Codex turn…' });
-          if (event.kind === 'stopIgnored') this.post(state, { type: 'status', text: 'Turn already completed before the stop request.' });
-          if (event.kind === 'stopError') this.post(state, { type: 'status', error: true, text: `Stop failed: ${event.message}` });
+          if (event.kind === 'stopIgnored' && !terminalStatus) this.post(state, { type: 'status', text: 'Turn already completed before the stop request.' });
+          if (event.kind === 'stopError' && !terminalStatus) this.post(state, { type: 'status', error: true, text: `Stop failed: ${event.message}` });
           if (event.kind === 'completed') {
-            completed = true;
-            this.post(state, { type: 'status', text: `Turn ${event.status}.` });
+            terminalStatus = event.status;
+            this.post(state, { type: 'status', error: terminalStatus !== 'completed', text: `Turn ${terminalStatus}.` });
           }
         });
-        if (!completed) throw new Error('Codex ended without a turn completion event.');
+        if (!terminalStatus) throw new Error('Codex ended without a turn completion event.');
+        if (terminalStatus !== 'completed') {
+          throw new Error(`Codex turn ${terminalStatus}. Check this conversation before resending; your prompt is retained.`);
+        }
       } catch (error) {
         this.post(state, { type: 'restoreDraft', text: message.text });
-        if (started) error.outcomeUnknown = true;
+        if (started && !terminalStatus) error.outcomeUnknown = true;
         throw error;
       }
     }
@@ -381,6 +393,7 @@ class ChatTabs {
 function activate(context) {
   const runtime = new SdkRuntime(context, vscode);
   const tabs = new ChatTabs(context, runtime);
+  activeTabs = tabs;
   context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, () => tabs.open()));
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, {
     async deserializeWebviewPanel(panel, state) { tabs.attach(panel, state || {}); }
@@ -388,4 +401,9 @@ function activate(context) {
   return tabs;
 }
 
-module.exports = { activate, ChatTabs, VIEW_TYPE, COMMAND_ID, workspacePath, hostKey };
+function deactivate() {
+  activeTabs?.shutdown();
+  activeTabs = undefined;
+}
+
+module.exports = { activate, deactivate, ChatTabs, VIEW_TYPE, COMMAND_ID, workspacePath, hostKey };

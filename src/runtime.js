@@ -2,13 +2,40 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 
 const SDK_VERSION = '0.162.1';
 
-function abortProcessTree(child, platform = process.platform, spawnProcess = spawn, signalProcess = process.kill) {
+function descendants(root, listing) {
+  const children = new Map();
+  for (const line of listing.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const parent = Number(match[2]);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(pid);
+  }
+  const found = [];
+  const seen = new Set([root]);
+  const queue = [root];
+  for (let index = 0; index < queue.length; index++) {
+    const pid = queue[index];
+    for (const child of children.get(pid) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      found.push(child);
+      queue.push(child);
+    }
+  }
+  return found;
+}
+
+function abortProcessTree(child, platform = process.platform, spawnProcess = spawn,
+  signalProcess = process.kill, listProcesses = () => execFileSync('ps', ['-A', '-o', 'pid=,ppid='],
+    { encoding: 'utf8', timeout: 1000, maxBuffer: 8 * 1024 * 1024 })) {
   if (!Number.isInteger(child.pid) || child.pid <= 0) {
     child.kill('SIGKILL');
     return;
@@ -17,6 +44,23 @@ function abortProcessTree(child, platform = process.platform, spawnProcess = spa
     spawnProcess('taskkill', ['/PID', String(child.pid), '/T', '/F'],
       { windowsHide: true, stdio: 'ignore' }).on('error', () => child.kill('SIGKILL'));
     return;
+  }
+  try { signalProcess(-child.pid, 'SIGSTOP'); } catch { /* Group may already have exited. */ }
+  const stopped = new Set();
+  for (let pass = 0; pass < 3; pass++) {
+    let added = false;
+    try {
+      for (const pid of descendants(child.pid, listProcesses())) {
+        if (stopped.has(pid)) continue;
+        stopped.add(pid);
+        added = true;
+        try { signalProcess(pid, 'SIGSTOP'); } catch { /* Process may have exited. */ }
+      }
+    } catch { break; /* Fall back to the helper process group. */ }
+    if (!added) break;
+  }
+  for (const pid of [...stopped].reverse()) {
+    try { signalProcess(pid, 'SIGKILL'); } catch { /* Process may have exited. */ }
   }
   try { signalProcess(-child.pid, 'SIGKILL'); }
   catch { child.kill('SIGKILL'); }

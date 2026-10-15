@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'media', 'chat.js'), 'utf8');
 
-function webview(saved = {}) {
+function webview(saved = {}, autoInit = true) {
   const elements = new Map();
   const posted = [];
   let persisted = saved;
@@ -42,10 +42,36 @@ function webview(saved = {}) {
     })
   });
   const emit = message => onMessage({ data: message });
-  emit({ type: 'init', ready: true, threadId: null, title: 'New Codex chat', mode: 'read_only',
+  const init = () => emit({ type: 'init', ready: true, threadId: null, title: 'New Codex chat', mode: 'read_only',
     hostKey: 'local|storage', workspaceKey: 'file:///workspace', panelId: 'panel', trusted: true });
-  return { get: id => document.getElementById(id), posted, emit, saved: () => persisted };
+  if (autoInit) init();
+  return { get: id => document.getElementById(id), posted, emit, init, saved: () => persisted };
 }
+
+test('new webview persists an empty draft and no failed prompt', () => {
+  const ui = webview();
+  assert.equal(ui.get('draft').value, '');
+  assert.equal(ui.saved().draft, '');
+  assert.equal(ui.saved().failedPrompt, null);
+});
+
+test('existing webview hydrates its saved draft and failed prompt', () => {
+  const ui = webview({ draft: 'saved draft', failedPrompt: 'older failed prompt' });
+  assert.equal(ui.get('draft').value, 'saved draft');
+  assert.equal(ui.get('failedPromptPane').hidden, false);
+  assert.equal(ui.get('failedPromptText').textContent, 'older failed prompt');
+  assert.equal(ui.saved().failedPrompt, 'older failed prompt');
+});
+
+test('draft typed before delayed initialization survives saved-state hydration', () => {
+  const ui = webview({ draft: 'stale saved draft' }, false);
+  ui.get('draft').value = 'new text before init';
+  ui.get('draft').dispatch('input');
+  assert.equal(ui.saved().draft, 'new text before init');
+  ui.init();
+  assert.equal(ui.get('draft').value, 'new text before init');
+  assert.equal(ui.saved().draft, 'new text before init');
+});
 
 test('acknowledging a sent prompt keeps a second draft typed before the user event', () => {
   const ui = webview();
