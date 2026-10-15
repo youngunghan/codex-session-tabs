@@ -14,7 +14,12 @@
 
   function persist() {
     vscode.setState({ threadId: state.threadId || null, title: state.title || 'New Codex chat',
-      panelId: state.panelId, hostKey: state.hostKey, workspaceKey: state.workspaceKey, draft: draft.value });
+      panelId: state.panelId, hostKey: state.hostKey, workspaceKey: state.workspaceKey,
+      draft: draft.value, failedPrompt: state.failedPrompt || null });
+  }
+  function showFailedPrompt() {
+    $('failedPromptPane').hidden = !state.failedPrompt;
+    $('failedPromptText').textContent = state.failedPrompt || '';
   }
   function textNode(tag, className, text) {
     const node = document.createElement(tag);
@@ -68,6 +73,18 @@
   $('more').addEventListener('click', () => nextCursor && request('historyMore', { cursor: nextCursor }));
   $('new').addEventListener('click', () => request('new'));
   $('stop').addEventListener('click', () => request('stop'));
+  $('restoreFailedPrompt').addEventListener('click', () => {
+    draft.value = state.failedPrompt || draft.value;
+    state.failedPrompt = null;
+    showFailedPrompt();
+    persist();
+    draft.focus();
+  });
+  $('dismissFailedPrompt').addEventListener('click', () => {
+    state.failedPrompt = null;
+    showFailedPrompt();
+    persist();
+  });
   $('rename').addEventListener('click', () => {
     $('renameInput').value = state.title || '';
     $('renamePane').hidden = false;
@@ -102,6 +119,7 @@
         state.workspaceKey = message.workspaceKey;
         state.panelId = message.panelId;
         draft.value = state.draft || '';
+        showFailedPrompt();
         $('setupPane').hidden = ready;
         $('mode').value = message.mode;
         $('mode').title = message.trusted ? '' : 'Workspace trust and an open folder are required for writes';
@@ -126,7 +144,7 @@
         break;
       case 'user':
         addMessage('user', message.text);
-        draft.value = '';
+        if (draft.value === message.text) draft.value = '';
         persist();
         currentAssistant = null;
         break;
@@ -177,7 +195,11 @@
           : 'Read only · approval requests denied');
         break;
       case 'restoreDraft':
-        draft.value = message.text;
+        if (!draft.value || draft.value === message.text) draft.value = message.text;
+        else {
+          state.failedPrompt = message.text;
+          showFailedPrompt();
+        }
         persist();
         break;
     }

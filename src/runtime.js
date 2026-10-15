@@ -8,6 +8,20 @@ const { StringDecoder } = require('node:string_decoder');
 
 const SDK_VERSION = '0.162.1';
 
+function abortProcessTree(child, platform = process.platform, spawnProcess = spawn, signalProcess = process.kill) {
+  if (!Number.isInteger(child.pid) || child.pid <= 0) {
+    child.kill('SIGKILL');
+    return;
+  }
+  if (platform === 'win32') {
+    spawnProcess('taskkill', ['/PID', String(child.pid), '/T', '/F'],
+      { windowsHide: true, stdio: 'ignore' }).on('error', () => child.kill('SIGKILL'));
+    return;
+  }
+  try { signalProcess(-child.pid, 'SIGKILL'); }
+  catch { child.kill('SIGKILL'); }
+}
+
 function runCommand(executable, args, options = {}, onLine = () => {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { ...options, windowsHide: true });
@@ -20,10 +34,11 @@ function runCommand(executable, args, options = {}, onLine = () => {}) {
 }
 
 class SdkRuntime {
-  constructor(context, api, spawnProcess = spawn) {
+  constructor(context, api, spawnProcess = spawn, abortTree = abortProcessTree) {
     this.context = context;
     this.api = api;
     this.spawnProcess = spawnProcess;
+    this.abortTree = abortTree;
     this.venv = path.join(context.globalStorageUri.fsPath, `python-sdk-${SDK_VERSION}`);
     this.python = path.join(this.venv, process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
     this.helper = path.join(context.extensionPath, 'py', 'codex_bridge.py');
@@ -67,6 +82,7 @@ class SdkRuntime {
     const requestId = randomUUID();
     const child = this.spawnProcess(this.python, ['-u', this.helper], {
       cwd: request.cwd || this.context.extensionPath, windowsHide: true,
+      detached: process.platform !== 'win32',
       env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
     });
     const decoder = new StringDecoder('utf8');
@@ -133,9 +149,10 @@ class SdkRuntime {
         child.stdin.write('{"op":"stop"}\n');
         stopTimer = setTimeout(() => child.kill(), 10000);
       },
-      kill() { if (!closed) child.kill(); }
+      kill() { if (!closed) child.kill(); },
+      abort: () => { if (!closed) this.abortTree(child); }
     };
   }
 }
 
-module.exports = { SdkRuntime, SDK_VERSION, runCommand };
+module.exports = { SdkRuntime, SDK_VERSION, runCommand, abortProcessTree };

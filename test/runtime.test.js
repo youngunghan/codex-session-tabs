@@ -1,9 +1,13 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
-const { SdkRuntime } = require('../src/runtime');
+const { SdkRuntime, abortProcessTree } = require('../src/runtime');
 
 function fakeRuntime(events, exitCode = 0, options = {}) {
   let stdinText = '';
@@ -34,6 +38,9 @@ function fakeRuntime(events, exitCode = 0, options = {}) {
       };
       child.kill = options.killNoop ? () => {} : () => child.emit('close', 1);
       return child;
+    }, child => {
+      options.onAbort?.(child);
+      child.emit('close', 1);
     });
   runtime.ready = true;
   return runtime;
@@ -93,4 +100,51 @@ test('bridge rejects multiple terminal events and SDK crash', async () => {
   await assert.rejects(duplicate.run({ op: 'send' }, () => {}).promise, /Multiple Codex SDK terminal events/);
   const crash = fakeRuntime([], 1);
   await assert.rejects(crash.run({ op: 'send' }, () => {}).promise, /exited 1/);
+});
+
+test('revocation aborts immediately without the cooperative ten-second stop path', async () => {
+  let aborts = 0;
+  let spawnOptions;
+  const runtime = fakeRuntime([], 0, {
+    onAbort: () => { aborts++; }, onSpawn: value => { spawnOptions = value; }
+  });
+  const operation = runtime.run({ op: 'send', text: 'work' }, () => {});
+  operation.abort();
+  assert.equal(aborts, 1);
+  assert.equal(spawnOptions.detached, process.platform !== 'win32');
+  await assert.rejects(operation.promise, /exited 1/);
+});
+
+test('hard abort targets the Unix process group and Windows process tree', () => {
+  const signals = [];
+  abortProcessTree({ pid: 123, kill() { throw new Error('single process kill used'); } }, 'darwin',
+    () => { throw new Error('taskkill used on Unix'); }, (...args) => { signals.push(args); });
+  assert.deepEqual(signals, [[-123, 'SIGKILL']]);
+  let command;
+  abortProcessTree({ pid: 456, kill() { throw new Error('single process kill used'); } }, 'win32',
+    (file, args, options) => { command = { file, args, options }; return { on() {} }; });
+  assert.equal(command.file, 'taskkill');
+  assert.deepEqual(command.args, ['/PID', '456', '/T', '/F']);
+  assert.equal(command.options.stdio, 'ignore');
+});
+
+test('Unix hard abort prevents a descendant from writing after revocation', { skip: process.platform === 'win32' }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-tabs-abort-'));
+  const target = path.join(dir, 'late-write');
+  const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(target)}, 'late'), 500)`;
+  const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' }); process.stdout.write('READY\\n'); setInterval(() => {}, 1000)`;
+  const child = spawn(process.execPath, ['-e', parent], { detached: true });
+  try {
+    await new Promise((resolve, reject) => {
+      child.stdout.once('data', resolve);
+      child.once('error', reject);
+    });
+    abortProcessTree(child);
+    await new Promise(resolve => child.once('close', resolve));
+    await new Promise(resolve => setTimeout(resolve, 700));
+    await assert.rejects(fs.stat(target), error => error.code === 'ENOENT');
+  } finally {
+    try { abortProcessTree(child); } catch { /* Already stopped. */ }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

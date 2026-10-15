@@ -19,6 +19,9 @@ button:disabled { opacity: .5; cursor: default; }
 .message.tool { color: var(--vscode-descriptionForeground); background: var(--vscode-textBlockQuote-background); font-family: var(--vscode-editor-font-family); font-size: .9em; }
 #composer { display: flex; gap: 8px; align-items: end; padding: 10px 14px; border-top: 1px solid var(--vscode-panel-border); }
 #draft { flex: 1; min-height: 48px; max-height: 180px; resize: vertical; padding: 8px; }
+#failedPromptPane { padding: 10px 14px; border-top: 1px solid var(--vscode-panel-border); color: var(--vscode-errorForeground); }
+#failedPromptText { max-height: 100px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-foreground); }
+#failedPromptPane button { margin-right: 8px; }
 #historyPane { position: absolute; top: 45px; right: 10px; width: min(420px, 90vw); max-height: 75vh; overflow: auto; padding: 12px; border: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); box-shadow: 0 4px 15px #0005; z-index: 2; }
 #history { display: grid; gap: 6px; margin: 10px 0; }
 .historyItem { text-align: left; overflow-wrap: anywhere; }

@@ -251,7 +251,7 @@ test('removed approved folder and folder changes during approval cannot authoriz
 test('active workspace-write turn stops when its folder is removed', async () => {
   const { tabs, state, api, runtime, posted } = fixture();
   let changed;
-  let stops = 0;
+  let aborts = 0;
   let finish;
   api.workspace.onDidChangeWorkspaceFolders = callback => {
     changed = callback;
@@ -259,44 +259,44 @@ test('active workspace-write turn stops when its folder is removed', async () =>
   };
   api.window.showWarningMessage = async () => 'Allow workspace writes';
   runtime.run = () => ({ promise: new Promise(resolve => { finish = resolve; }),
-    stop() { stops++; finish(); } });
+    abort() { aborts++; finish(); }, stop() { throw new Error('cooperative stop used'); } });
   await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
   const pending = tabs.handle(state, { type: 'send', text: 'edit while folder changes' });
   api.workspace.workspaceFolders = [];
   changed();
   await assert.rejects(pending, /approval expired during the turn/);
-  assert.equal(stops, 1);
+  assert.equal(aborts, 1);
   assert.equal(state.mode, 'read_only');
   assert.ok(posted.some(event => event.type === 'mode' && event.mode === 'read_only'));
 });
 
 test('active workspace-write turn stops after trust is revoked without a VS Code trust event', async () => {
   const { tabs, state, api, runtime } = fixture();
-  let stops = 0;
+  let aborts = 0;
   let finish;
   api.window.showWarningMessage = async () => 'Allow workspace writes';
   runtime.run = () => ({ promise: new Promise(resolve => { finish = resolve; }),
-    stop() { stops++; finish(); } });
+    abort() { aborts++; finish(); }, stop() { throw new Error('cooperative stop used'); } });
   await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
   const pending = tabs.handle(state, { type: 'send', text: 'edit while trust changes' });
   api.workspace.isTrusted = false;
   await assert.rejects(pending, /approval expired during the turn/);
-  assert.equal(stops, 1);
+  assert.equal(aborts, 1);
   assert.equal(state.mode, 'read_only');
 });
 
 test('synchronous SDK event during trust loss still stops the operation after creation', async () => {
   const { tabs, state, api, runtime } = fixture();
-  let stops = 0;
+  let aborts = 0;
   api.window.showWarningMessage = async () => 'Allow workspace writes';
   await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
   runtime.run = (_request, onEvent) => {
     api.workspace.isTrusted = false;
     onEvent({ kind: 'turn', turnId: 'turn-1' });
-    return { promise: Promise.resolve(), stop() { stops++; } };
+    return { promise: Promise.resolve(), abort() { aborts++; }, stop() { throw new Error('cooperative stop used'); } };
   };
   await assert.rejects(tabs.handle(state, { type: 'send', text: 'must stop' }), /approval expired during the turn/);
-  assert.equal(stops, 1);
+  assert.equal(aborts, 1);
   assert.equal(state.mode, 'read_only');
 });
 
@@ -328,6 +328,21 @@ test('two open panels keep separate state and New chat opens a third panel', asy
   assert.equal(second.threadId, THREAD_B);
   assert.equal(panel.title, 'Second');
   assert.equal(tabs.owners.get(THREAD_B), second);
+});
+
+test('folders with the same basename retain distinct saved tab records', async () => {
+  const { tabs, state, api, panel, stored } = fixture();
+  tabs.setThread(state, THREAD_A, 'First workspace');
+  api.workspace.workspaceFolders = [{ uri: { fsPath: '/other/workspace',
+    toString: () => 'file:///other/workspace' } }];
+  tabs.attach({ ...panel, webview: { ...panel.webview } });
+  const second = [...tabs.panels].find(item => item !== state);
+  tabs.setThread(second, THREAD_B, 'Second workspace');
+  await Promise.all([state.persistence, second.persistence]);
+  const records = Object.values(stored['codexSessionTabs.panelThreads']);
+  assert.equal(records.length, 2);
+  assert.deepEqual(new Set(records.map(record => record.workspaceKey)),
+    new Set(['file:///workspace', 'file:///other/workspace']));
 });
 
 test('fresh installs start with a provisional read-only tab', () => {
@@ -362,6 +377,65 @@ test('restored ID comes from persisted host record while write mode resets', asy
   assert.equal(restoredState.title, 'Persisted title');
   assert.equal(restoredState.mode, 'read_only');
   assert.equal(Object.keys(stored['codexSessionTabs.panelThreads']).length, 1);
+});
+
+test('restored tab finds its saved folder after multi-root reorder', async () => {
+  const { tabs, state, context, runtime, api, panel } = fixture();
+  tabs.setThread(state, THREAD_A, 'Saved in A');
+  await state.persistence;
+  const original = api.workspace.workspaceFolders[0];
+  const other = { uri: { fsPath: '/other', toString: () => 'file:///other' } };
+  api.workspace.workspaceFolders = [other, original];
+  const restored = new tabs.constructor(context, runtime);
+  restored.attach({ ...panel, webview: { ...panel.webview } }, { panelId: state.panelId,
+    threadId: THREAD_A, hostKey: tabs.hostKey, workspaceKey: 'file:///workspace' });
+  const next = [...restored.panels][0];
+  assert.equal(next.threadId, THREAD_A);
+  assert.equal(next.cwd, '/workspace');
+  assert.equal(next.workspaceKey, 'file:///workspace');
+  assert.equal(next.mode, 'read_only');
+});
+
+test('missing saved folder does not bind a thread to another root or erase its record', async () => {
+  const { tabs, state, context, runtime, api, panel, stored } = fixture();
+  tabs.setThread(state, THREAD_A, 'Saved in A');
+  await state.persistence;
+  api.workspace.workspaceFolders = [{ uri: { fsPath: '/other', toString: () => 'file:///other' } }];
+  let dispose;
+  const restored = new tabs.constructor(context, runtime);
+  restored.attach({ ...panel, webview: { ...panel.webview }, onDidDispose(callback) { dispose = callback; } },
+    { panelId: state.panelId, threadId: THREAD_A, hostKey: tabs.hostKey, workspaceKey: 'file:///workspace' });
+  const next = [...restored.panels][0];
+  assert.equal(next.threadId, null);
+  assert.equal(next.incompatible, true);
+  assert.equal(next.cwd, '/other');
+  dispose();
+  await restored.recordWrite;
+  assert.equal(stored['codexSessionTabs.panelThreads'][state.panelId].threadId, THREAD_A);
+});
+
+test('persistence rejection does not turn a completed SDK turn into an uncertain retry', async () => {
+  const { tabs, state, context, posted, calls } = fixture();
+  let saves = 0;
+  const originalUpdate = context.workspaceState.update;
+  context.workspaceState.update = async (...args) => {
+    saves++;
+    if (saves === 1) throw new Error('storage unavailable');
+    return originalUpdate(...args);
+  };
+  await tabs.handle(state, { type: 'send', text: 'first' });
+  assert.equal(state.threadId, THREAD_A);
+  assert.equal(state.busy, false);
+  assert.equal(posted.some(event => event.type === 'restoreDraft'), false);
+  assert.ok(posted.some(event => event.type === 'status' && /could not save its thread ID/.test(event.text)));
+  await tabs.handle(state, { type: 'send', text: 'second' });
+  assert.equal(calls[1].threadId, THREAD_A);
+  assert.equal(calls.length, 2);
+  assert.equal(state.busy, false);
+  assert.equal(state.persistenceError, null);
+  assert.equal(saves, 2);
+  assert.equal(state.persistenceDirty, false);
+  assert.equal(context.workspaceState.get('codexSessionTabs.panelThreads')[state.panelId].threadId, THREAD_A);
 });
 
 test('webview uses a restrictive CSP and text rendering for SDK output', async () => {

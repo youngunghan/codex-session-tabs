@@ -60,11 +60,14 @@ class ChatTabs {
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
     };
     const panelId = validThreadId(saved.panelId) ? saved.panelId : randomUUID();
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const record = this.records[panelId];
+    const restored = record?.hostKey === this.hostKey ? record : saved;
+    const savedFolder = restored.hostKey === this.hostKey && restored.workspaceKey
+      ? vscode.workspace.workspaceFolders?.find(item => item.uri.toString() === restored.workspaceKey)
+      : undefined;
+    const folder = savedFolder || vscode.workspace.workspaceFolders?.[0];
     const cwd = folder?.uri.fsPath;
     const workspaceId = folder?.uri.toString() || '';
-    const record = this.records[panelId];
-    const restored = record?.hostKey === this.hostKey && record?.workspaceKey === workspaceId ? record : saved;
     const compatible = restored.hostKey === this.hostKey && restored.workspaceKey === workspaceId;
     const threadId = compatible && validThreadId(restored.threadId) ? restored.threadId : null;
     const existing = threadId && this.owners.get(threadId);
@@ -86,7 +89,9 @@ class ChatTabs {
       operation: null,
       closed: false,
       incompatible: !!restored.threadId && !compatible,
-      persistence: Promise.resolve()
+      persistence: Promise.resolve(),
+      persistenceError: null,
+      persistenceDirty: false
     };
     panel.title = state.title;
     panel.webview.html = html(panel, this.context);
@@ -104,7 +109,7 @@ class ChatTabs {
       state.closed = true;
       state.operation?.stop();
       if (state.threadId && this.owners.get(state.threadId) === state) this.owners.delete(state.threadId);
-      delete this.records[state.panelId];
+      if (!state.incompatible) delete this.records[state.panelId];
       void this.saveRecords().catch(error => console.error('Codex chat: failed to save closed tab state', error));
       this.panels.delete(state);
     }, null, this.context.subscriptions);
@@ -138,18 +143,37 @@ class ChatTabs {
     if (state.threadId && this.owners.get(state.threadId) === state) this.owners.delete(state.threadId);
     state.threadId = id;
     state.title = title || 'Codex chat';
+    state.incompatible = false;
     this.owners.set(id, state);
     state.panel.title = state.title;
     this.records[state.panelId] = {
       threadId: id, title: state.title, hostKey: this.hostKey, workspaceKey: state.workspaceKey
     };
-    state.persistence = this.saveRecords();
+    this.persistThread(state);
     this.post(state, { type: 'thread', threadId: id, title: state.title, hostKey: this.hostKey });
+  }
+
+  persistThread(state) {
+    state.persistenceError = null;
+    state.persistence = this.saveRecords().then(() => { state.persistenceDirty = false; }).catch(error => {
+      state.persistenceDirty = true;
+      state.persistenceError = error;
+      console.error('Codex chat: failed to save thread state', error);
+    });
+  }
+
+  async reportPersistence(state) {
+    await state.persistence;
+    if (!state.persistenceError) return;
+    this.post(state, { type: 'status', error: true,
+      text: 'Codex finished, but this tab could not save its thread ID. Keep the tab open and retry after fixing workspace state storage.' });
+    state.persistenceError = null;
   }
 
   async run(state, request, onEvent = () => {}) {
     if (state.busy) throw new Error('This tab is already running a Codex operation.');
     if (!this.runtime.ready) throw new Error('Set up the Codex SDK first.');
+    if (state.persistenceDirty) this.persistThread(state);
     state.busy = true;
     this.post(state, { type: 'busy', value: true });
     const watchingWrite = request.op === 'send' && request.mode === 'workspace_write';
@@ -157,6 +181,15 @@ class ChatTabs {
     let revoked = false;
     let guardTimer;
     let folderListener;
+    const abortOperation = () => {
+      try {
+        if (operation?.abort) operation.abort();
+        else operation?.kill?.();
+      } catch (error) {
+        console.error('Codex chat: failed to abort revoked write turn', error);
+        try { operation?.kill?.(); } catch { /* Process may already have exited. */ }
+      }
+    };
     const checkWriteApproval = () => {
       if (!watchingWrite || revoked || (approvedWorkspacePresent(state) &&
           state.writeApproval?.cwd === state.cwd && state.writeApproval?.workspaceKey === state.workspaceKey)) return;
@@ -166,36 +199,32 @@ class ChatTabs {
       this.post(state, { type: 'mode', mode: state.mode });
       this.post(state, { type: 'status', error: true,
         text: 'Workspace write approval changed during this turn. Stopping Codex.' });
-      try { operation?.stop(); }
-      catch { operation?.kill?.(); }
+      abortOperation();
     };
     try {
       operation = this.runtime.run({ ...request, cwd: state.cwd }, event => {
         checkWriteApproval();
-        onEvent(event);
+        if (!revoked) onEvent(event);
       });
       state.operation = operation;
-      if (revoked) {
-        try { operation.stop(); }
-        catch { operation.kill?.(); }
-      }
+      if (revoked) abortOperation();
       if (watchingWrite) {
         folderListener = vscode.workspace.onDidChangeWorkspaceFolders?.(checkWriteApproval);
         guardTimer = setInterval(checkWriteApproval, 250);
       }
-      await operation.promise;
+      let operationError;
+      try { await operation.promise; }
+      catch (error) { operationError = error; }
       checkWriteApproval();
       if (revoked) throw new Error('Workspace write approval expired during the turn; Codex was stopped.');
+      if (operationError) throw operationError;
     } finally {
       clearInterval(guardTimer);
       folderListener?.dispose();
-      try {
-        await state.persistence;
-      } finally {
-        state.operation = null;
-        state.busy = false;
-        this.post(state, { type: 'busy', value: false });
-      }
+      await this.reportPersistence(state);
+      state.operation = null;
+      state.busy = false;
+      this.post(state, { type: 'busy', value: false });
     }
   }
 
@@ -211,6 +240,7 @@ class ChatTabs {
     this.post(state, { type: 'loaded', threadId: state.threadId, title: state.title, messages: loaded.messages || [] });
     for (const messages of chunks) this.post(state, { type: 'loadedChunk', messages });
     this.post(state, { type: 'status', text: 'Conversation loaded · read only' });
+    await this.reportPersistence(state);
   }
 
   async setup(state) {
@@ -306,6 +336,7 @@ class ChatTabs {
       if (!renamed) throw new Error('Codex did not confirm the rename.');
       this.setThread(state, state.threadId, message.name);
       this.post(state, { type: 'status', text: 'Codex thread renamed.' });
+      await this.reportPersistence(state);
       return;
     }
     if (message.type === 'send') {
