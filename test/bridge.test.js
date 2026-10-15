@@ -197,6 +197,51 @@ test('stdin EOF aborts an active turn and its detached SDK descendant', { skip: 
   }
 });
 
+test('stdin EOF during thread setup aborts a detached child before any turn event',
+  { skip: process.platform === 'win32' }, async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-bridge-early-eof-'));
+    const sentinel = path.join(directory, 'late.txt');
+    const pidFile = path.join(directory, 'child.pid');
+    const delayedWrite = `import time,pathlib;time.sleep(.5);pathlib.Path(${JSON.stringify(sentinel)}).write_text('late')`;
+    const stub = `import asyncio, pathlib, subprocess, sys\n` +
+      `class Mode:\n    read_only='read_only'\n    workspace_write='workspace_write'\n    deny_all='deny_all'\n` +
+      `Sandbox=ApprovalMode=Mode\n` +
+      `class Thread:\n    id='0199ab00-0000-7000-8000-000000000001'\n    async def set_name(self, name): await asyncio.sleep(2)\n` +
+      `class AsyncCodex:\n    async def __aenter__(self): return self\n    async def __aexit__(self, *args): pass\n    async def thread_start(self, **kwargs):\n        child = subprocess.Popen([sys.executable, '-c', ${JSON.stringify(delayedWrite)}], start_new_session=True)\n        pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(child.pid))\n        return Thread()\n`;
+    let child;
+    let descendantPid;
+    try {
+      await fs.writeFile(path.join(directory, 'openai_codex.py'), stub);
+      child = spawn('python3', ['-u', path.join(__dirname, '..', 'py', 'codex_bridge.py')], {
+        env: { ...process.env, PYTHONPATH: directory, PYTHONUTF8: '1' }, detached: true
+      });
+      let output = '';
+      const started = new Promise((resolve, reject) => {
+        child.stdout.on('data', chunk => {
+          output += chunk;
+          if (output.includes('"kind": "thread"')) resolve();
+        });
+        child.on('error', reject);
+        child.on('exit', code => reject(new Error(`Helper exited before thread: ${code}\n${output}`)));
+      });
+      child.stdin.write(JSON.stringify({ requestId: 'early-eof', op: 'send', text: 'wait',
+        mode: 'workspace_write', cwd: directory }) + '\n');
+      await started;
+      descendantPid = Number(await fs.readFile(pidFile, 'utf8'));
+      child.stdin.end();
+      const exit = await new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+      assert.notEqual(exit.code, 0, output);
+      assert.doesNotMatch(output, /"kind": "turn"/);
+      await new Promise(resolve => setTimeout(resolve, 750));
+      await assert.rejects(fs.stat(sentinel), { code: 'ENOENT' });
+      assert.throws(() => process.kill(descendantPid, 0), { code: 'ESRCH' });
+    } finally {
+      try { process.kill(descendantPid, 'SIGKILL'); } catch { /* Already stopped. */ }
+      if (child) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Already stopped. */ }
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
 test('Windows EOF waits for taskkill tree completion before exiting the helper', () => {
   const script = `
 import importlib.util, json, sys, types

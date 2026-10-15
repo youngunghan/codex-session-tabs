@@ -96,6 +96,7 @@ class ChatTabs {
       writeApproval: null,
       busy: false,
       operation: null,
+      stopRequested: false,
       closed: false,
       incompatible: !!restored.threadId && !compatible,
       persistence: Promise.resolve(),
@@ -283,7 +284,13 @@ class ChatTabs {
       return;
     }
     if (message.type === 'setup') { await this.setup(state); return; }
-    if (message.type === 'stop') { state.operation?.stop(); return; }
+    if (message.type === 'stop') {
+      if (state.operation) {
+        state.stopRequested = true;
+        state.operation.stop();
+      }
+      return;
+    }
     if (message.type === 'new') { this.open(); return; }
     if (state.busy) throw new Error('This tab is busy. Stop or wait for its current Codex operation.');
     if (message.type === 'mode') {
@@ -351,6 +358,7 @@ class ChatTabs {
     }
     if (message.type === 'send') {
       if (!this.runtime.ready) throw new Error('Set up the Codex SDK first.');
+      state.stopRequested = false;
       if (state.mode === 'workspace_write' && (!approvedWorkspacePresent(state) ||
           state.writeApproval?.cwd !== state.cwd || state.writeApproval?.workspaceKey !== state.workspaceKey)) {
         state.mode = 'read_only';
@@ -384,8 +392,10 @@ class ChatTabs {
         }
       } catch (error) {
         this.post(state, { type: 'restoreDraft', text: message.text });
-        if (started && !terminalStatus) error.outcomeUnknown = true;
+        if ((started || state.stopRequested) && !terminalStatus) error.outcomeUnknown = true;
         throw error;
+      } finally {
+        state.stopRequested = false;
       }
     }
   }

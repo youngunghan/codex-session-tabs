@@ -17,6 +17,7 @@ from typing import Any
 from openai_codex import ApprovalMode, AsyncCodex, Sandbox
 
 REQUEST_ID = ""
+INPUT_WATCHER: InputWatcher | None = None
 MAX_TOOL_TEXT = 32_768
 MAX_TEXT_CHUNK = 4_096
 MAX_JSON_CHUNK_BYTES = 64 * 1_024
@@ -171,53 +172,70 @@ async def read_thread(thread: Any) -> Any:
         return (await thread.read(include_turns=False)).thread
 
 
-def watch_stop(turn: Any) -> asyncio.Event:
-    # A daemon reader avoids blocking asyncio.run's executor shutdown when the
-    # extension keeps stdin open while a completed turn exits.
-    loop = asyncio.get_running_loop()
-    done = asyncio.Event()
+class InputWatcher:
+    def __init__(self) -> None:
+        # Read stdin from request start so parent EOF also stops setup/resume.
+        # A daemon avoids blocking asyncio.run when the extension keeps stdin open.
+        self.loop = asyncio.get_running_loop()
+        self.turn_done = asyncio.Event()
+        self.operation_done = threading.Event()
+        self.turn: Any = None
+        self.stop_requested = False
+        self.interrupt_started = False
+        threading.Thread(target=self.reader, daemon=True).start()
 
-    async def interrupt() -> None:
-        if done.is_set():
+    async def interrupt(self) -> None:
+        if self.turn_done.is_set():
             emit("stopIgnored")
             return
         emit("stopping")
-        deadline = loop.time() + 5
-        while not done.is_set():
+        deadline = self.loop.time() + 5
+        while not self.turn_done.is_set():
             try:
-                await turn.interrupt()
+                await self.turn.interrupt()
                 return
             except Exception as error:
                 if "no active turn to interrupt" not in str(error).lower():
                     emit("stopError", message=str(error))
                     return
-                if loop.time() >= deadline:
+                if self.loop.time() >= deadline:
                     emit("stopError", message="Turn did not become interruptible within five seconds.")
                     return
                 try:
-                    await asyncio.wait_for(done.wait(), min(0.1, deadline - loop.time()))
+                    await asyncio.wait_for(self.turn_done.wait(), min(0.1, deadline - self.loop.time()))
                 except asyncio.TimeoutError:
                     pass
         emit("stopIgnored")
 
-    def reader() -> None:
-        stop_requested = False
+    def schedule_stop(self) -> None:
+        if self.turn is not None and not self.interrupt_started:
+            self.interrupt_started = True
+            asyncio.create_task(self.interrupt())
+
+    def attach(self, turn: Any) -> asyncio.Event:
+        self.turn = turn
+        if self.stop_requested:
+            self.schedule_stop()
+        return self.turn_done
+
+    def reader(self) -> None:
         for line in sys.stdin:
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if message.get("op") == "stop" and not stop_requested:
-                stop_requested = True
+            if message.get("op") == "stop" and not self.stop_requested:
+                self.stop_requested = True
                 try:
-                    loop.call_soon_threadsafe(lambda: asyncio.create_task(interrupt()))
+                    self.loop.call_soon_threadsafe(self.schedule_stop)
                 except RuntimeError:
                     pass  # The turn finished as the stop request arrived.
-        if not done.is_set():
+        if not self.operation_done.is_set():
             abort_on_parent_eof()
 
-    threading.Thread(target=reader, daemon=True).start()
-    return done
+
+def watch_stop(turn: Any) -> asyncio.Event:
+    return (INPUT_WATCHER or InputWatcher()).attach(turn)
 
 
 async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
@@ -232,6 +250,8 @@ async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
         emit("thread", threadId=thread.id)
         # A named zero-turn thread is resumable even if thread_list omits it.
         await thread.set_name(request["text"].strip().splitlines()[0][:60] or "Codex chat")
+    if INPUT_WATCHER and INPUT_WATCHER.stop_requested:
+        raise RuntimeError("Turn stopped before it started.")
     turn = await thread.turn(
         request["text"], cwd=request.get("cwd"), sandbox=sandbox, approval_mode=approval,
     )
@@ -275,7 +295,8 @@ async def run(request: dict[str, Any]) -> None:
 
 
 async def main() -> None:
-    global REQUEST_ID
+    global REQUEST_ID, INPUT_WATCHER
+    watcher = None
     try:
         line = await asyncio.to_thread(sys.stdin.readline)
         if not line:
@@ -284,6 +305,8 @@ async def main() -> None:
         REQUEST_ID = request.get("requestId", "")
         if not isinstance(REQUEST_ID, str) or not REQUEST_ID:
             raise ValueError("Missing request ID")
+        watcher = InputWatcher()
+        INPUT_WATCHER = watcher
         await run(request)
     except Exception as error:
         message = str(error) or type(error).__name__
@@ -291,6 +314,9 @@ async def main() -> None:
         code = "BUSY" if any(word in lower for word in ("already in use", "locked", "busy", "active owner")) else "ERROR"
         emit("error", code=code, message=message)
         sys.exit(1)
+    finally:
+        if watcher:
+            watcher.operation_done.set()
 
 
 if __name__ == "__main__":

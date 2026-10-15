@@ -169,7 +169,11 @@ class SdkRuntime {
           try {
             if (event.requestId !== requestId) throw new Error('Mismatched Codex SDK request ID');
             if (event.kind === 'turn') turnSeen = true;
-            if (['list', 'loaded', 'renamed', 'completed', 'error'].includes(event.kind)) terminalCount++;
+            if (['list', 'loaded', 'renamed', 'completed', 'error'].includes(event.kind)) {
+              terminalCount++;
+              clearTimeout(stopTimer);
+              stopTimer = undefined;
+            }
             if (terminalCount > 1) throw new Error('Multiple Codex SDK terminal events');
             if (event.kind === 'error') eventError = new Error(event.message);
             onEvent(event);
@@ -196,16 +200,21 @@ class SdkRuntime {
         else if (code === 0) reject(new Error('Codex SDK ended without exactly one terminal event.'));
         else reject(new Error(stderr || `Codex SDK exited ${code}`));
       });
-      child.stdin.on('error', error => { reject(error); hardAbort(); });
+      child.stdin.on('error', error => {
+        if (terminalCount > 0 && error.code === 'EPIPE') return;
+        reject(error);
+        hardAbort();
+      });
     });
     child.stdin.write(`${JSON.stringify({ ...request, requestId })}\n`);
     return {
       promise,
       stop() {
-        if (closed) return;
+        if (closed || terminalCount > 0) return;
         if (!turnSeen) { hardAbort(); return; }
-        child.stdin.write('{"op":"stop"}\n');
-        clearTimeout(stopTimer);
+        if (stopTimer) return;
+        try { child.stdin.write('{"op":"stop"}\n'); }
+        catch { hardAbort(); return; }
         stopTimer = setTimeout(hardAbort, 10000);
       },
       kill: hardAbort,

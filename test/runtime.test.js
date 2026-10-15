@@ -32,11 +32,12 @@ function fakeRuntime(events, exitCode = 0, options = {}) {
                 child.stdout.emit('data', bytes.subarray(split + 1));
               } else child.stdout.emit('data', bytes);
             }
-            child.emit('close', exitCode);
+            if (!options.delayClose) child.emit('close', exitCode);
           });
         }
       };
       child.kill = options.killNoop ? () => {} : () => child.emit('close', 1);
+      options.onChild?.(child);
       return child;
     }, child => {
       options.onAbort?.(child);
@@ -52,6 +53,25 @@ test('bridge accepts one matching terminal event after nonterminal thread and tu
     { kind: 'completed', status: 'completed' }]);
   await runtime.run({ op: 'send', text: 'Hello' }, event => seen.push(event.kind)).promise;
   assert.deepEqual(seen, ['thread', 'turn', 'completed']);
+});
+
+test('Stop after completion but before process close does not write stdin or lose success', async () => {
+  let child;
+  let completed;
+  const gotCompletion = new Promise(resolve => { completed = resolve; });
+  const runtime = fakeRuntime([{ kind: 'turn' }, { kind: 'completed', status: 'completed' }], 0,
+    { delayClose: true, onChild: value => { child = value; } });
+  const operation = runtime.run({ op: 'send', text: 'done' }, event => {
+    if (event.kind === 'completed') completed();
+  });
+  await gotCompletion;
+  let writes = 0;
+  child.stdin.write = () => { writes++; throw Object.assign(new Error('broken pipe'), { code: 'EPIPE' }); };
+  operation.stop();
+  assert.equal(writes, 0);
+  child.stdin.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+  child.emit('close', 0);
+  await operation.promise;
 });
 
 test('bridge decodes Korean and emoji across UTF-8 byte boundaries and requests Python UTF-8', async () => {
@@ -96,6 +116,38 @@ test('Stop before the SDK reports a turn hard-aborts instead of waiting for inte
   const operation = runtime.run({ op: 'send', text: 'work' }, () => {});
   operation.stop();
   assert.equal(aborts, 1);
+  await assert.rejects(operation.promise, /exited 1/);
+});
+
+test('repeated Stop clicks keep the first hard-abort deadline', async () => {
+  let child;
+  let turnSeen;
+  const turn = new Promise(resolve => { turnSeen = resolve; });
+  const runtime = fakeRuntime([{ kind: 'turn' }], 0,
+    { delayClose: true, onChild: value => { child = value; } });
+  const operation = runtime.run({ op: 'send', text: 'work' }, event => {
+    if (event.kind === 'turn') turnSeen();
+  });
+  await turn;
+  let stopWrites = 0;
+  const originalWrite = child.stdin.write;
+  child.stdin.write = chunk => {
+    if (chunk.includes('"op":"stop"')) stopWrites++;
+    return originalWrite(chunk);
+  };
+  let deadlines = 0;
+  const originalSetTimeout = global.setTimeout;
+  try {
+    global.setTimeout = (callback, delay, ...args) => {
+      if (delay === 10000) deadlines++;
+      return originalSetTimeout(callback, delay, ...args);
+    };
+    operation.stop();
+    operation.stop();
+  } finally { global.setTimeout = originalSetTimeout; }
+  assert.equal(stopWrites, 1);
+  assert.equal(deadlines, 1);
+  child.emit('close', 1);
   await assert.rejects(operation.promise, /exited 1/);
 });
 

@@ -239,6 +239,24 @@ test('stream crash after turn start retains the draft and flags uncertain outcom
   assert.equal(failure.outcomeUnknown, true);
 });
 
+test('Stop before a turn event preserves the prompt and flags uncertain outcome', async () => {
+  const { tabs, state, posted, runtime } = fixture();
+  let rejectOperation;
+  runtime.run = () => ({
+    promise: new Promise((_resolve, reject) => { rejectOperation = reject; }),
+    stop() { rejectOperation(new Error('Codex SDK exited after early Stop')); },
+    abort() {}
+  });
+  const pending = tabs.handle(state, { type: 'send', text: 'May have started' });
+  await tabs.handle(state, { type: 'stop' });
+  let failure;
+  try { await pending; } catch (error) { failure = error; tabs.error(state, error); }
+  assert.equal(failure.outcomeUnknown, true);
+  assert.ok(posted.some(event => event.type === 'restoreDraft' && event.text === 'May have started'));
+  assert.ok(posted.some(event => event.type === 'status' && /outcome unknown/.test(event.text)));
+  assert.equal(state.stopRequested, false);
+});
+
 for (const status of ['failed', 'interrupted']) {
   test(`terminal ${status} turn retains its prompt and thread ID`, async () => {
     const { tabs, state, posted, runtime } = fixture();
