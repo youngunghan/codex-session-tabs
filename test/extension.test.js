@@ -18,7 +18,7 @@ function loadExtension() {
     workspace: { workspaceFolders: [{ uri: { fsPath: '/workspace', toString: () => 'file:///workspace' } }], isTrusted: true,
       getConfiguration: () => ({ get: () => '' }) },
     commands: { registerCommand: () => ({ dispose() {} }) },
-    window: { showWarningMessage: async () => 'Open read only',
+    window: { showWarningMessage: async () => 'Open with local files read only',
       registerWebviewPanelSerializer: () => ({ dispose() {} }),
       withProgress: async (_options, callback) => callback({ report() {} }) },
     ProgressLocation: { Notification: 1 }
@@ -98,6 +98,20 @@ test('extension deactivation hard-aborts every active SDK operation synchronousl
   assert.equal(state.operation !== null, true);
 });
 
+test('closing an editor tab immediately hard-aborts its active operation', async () => {
+  const { tabs, panel } = fixture();
+  let dispose;
+  tabs.attach({ ...panel, webview: { ...panel.webview },
+    onDidDispose(callback) { dispose = callback; } });
+  const state = [...tabs.panels].at(-1);
+  let aborts = 0;
+  state.operation = { abort() { aborts++; }, stop() { throw new Error('cooperative stop used'); } };
+  dispose();
+  assert.equal(aborts, 1);
+  assert.equal(state.closed, true);
+  await tabs.recordWrite;
+});
+
 test('webview requests reject malformed IDs, dangerous modes, and empty messages', () => {
   assert.ok(!validateMessage({ type: 'select', threadId: '../session' }), 'invalid thread ID must be rejected');
   assert.equal(validateMessage({ type: 'mode', mode: 'full_access' }), undefined);
@@ -136,6 +150,21 @@ test('history switch and rename update the real thread and current editor title'
   await tabs.handle(state, { type: 'rename', name: 'Important work' });
   assert.equal(panel.title, 'Important work');
   assert.ok(calls.some(call => call.op === 'rename' && call.threadId === THREAD_B && call.name === 'Important work'));
+});
+
+test('cross-workspace history prompt and loaded status scope read-only to local files', async () => {
+  const { tabs, state, api, posted } = fixture();
+  await tabs.handle(state, { type: 'history' });
+  state.historyRows.get(THREAD_B).cwd = '/other';
+  api.window.showWarningMessage = async (text, _options, choice) => {
+    assert.match(text, /read-only local file access/);
+    assert.match(text, /external tools may still act on external services/);
+    assert.equal(choice, 'Open with local files read only');
+    return choice;
+  };
+  await tabs.handle(state, { type: 'select', threadId: THREAD_B });
+  assert.ok(posted.some(event => event.type === 'status' &&
+    event.text === 'Conversation loaded · local files read only'));
 });
 
 test('switching history threads resets write permission before the next send', async () => {

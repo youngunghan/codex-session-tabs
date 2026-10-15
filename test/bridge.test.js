@@ -196,3 +196,43 @@ test('stdin EOF aborts an active turn and its detached SDK descendant', { skip: 
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Windows EOF waits for taskkill tree completion before exiting the helper', () => {
+  const script = `
+import importlib.util, json, sys, types
+stub = types.ModuleType('openai_codex')
+stub.ApprovalMode = object
+stub.AsyncCodex = object
+stub.Sandbox = object
+sys.modules['openai_codex'] = stub
+spec = importlib.util.spec_from_file_location('codex_bridge', sys.argv[1])
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+events = []
+class Exit(Exception): pass
+def run(args, **kwargs):
+    events.append('taskkill-start')
+    assert args == ['taskkill', '/PID', str(bridge.os.getpid()), '/T', '/F']
+    events.append('taskkill-finished')
+def finish(code):
+    events.append('helper-exit')
+    assert code == 1
+    raise Exit()
+try: bridge.abort_on_parent_eof(platform='nt', run_command=run, exit_process=finish)
+except Exit: pass
+assert events == ['taskkill-start', 'taskkill-finished', 'helper-exit'], events
+events.clear()
+def failed_run(args, **kwargs):
+    events.append('taskkill-failed')
+    raise OSError('taskkill unavailable')
+try: bridge.abort_on_parent_eof(platform='nt', run_command=failed_run, exit_process=finish)
+except Exit: pass
+assert events == ['taskkill-failed', 'helper-exit'], events
+print('windows-eof-order=taskkill-finished-before-exit')
+`;
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const helper = path.join(__dirname, '..', 'py', 'codex_bridge.py');
+  const result = spawnSync(python, ['-c', script, helper], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'windows-eof-order=taskkill-finished-before-exit');
+});

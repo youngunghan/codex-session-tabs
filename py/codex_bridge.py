@@ -22,37 +22,51 @@ MAX_TEXT_CHUNK = 4_096
 MAX_JSON_CHUNK_BYTES = 64 * 1_024
 
 
-def abort_on_parent_eof() -> None:
+def abort_on_parent_eof(platform: str | None = None, run_command: Any = subprocess.run,
+                        exit_process: Any = os._exit) -> None:
     """Stop SDK descendants if the extension host disappears mid-turn."""
     own_pid = os.getpid()
-    if os.name == "nt":
-        subprocess.Popen(["taskkill", "/PID", str(own_pid), "/T", "/F"],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-        os._exit(1)
+    if (platform or os.name) == "nt":
+        # Keep this root alive while taskkill enumerates the entire tree.
+        try:
+            run_command(["taskkill", "/PID", str(own_pid), "/T", "/F"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        finally:
+            exit_process(1)
     try:
-        rows = subprocess.check_output(["ps", "-A", "-o", "pid=,ppid="],
-                                       text=True, timeout=1).splitlines()
-        children: dict[int, list[int]] = {}
-        for row in rows:
-            columns = row.split()
-            if len(columns) != 2 or not all(part.isdecimal() for part in columns):
-                continue
-            pid, parent = map(int, columns)
-            children.setdefault(parent, []).append(pid)
-        queue = [own_pid]
-        found: list[int] = []
-        for pid in queue:
-            for child in children.get(pid, []):
-                if child not in queue:
+        stopped: set[int] = set()
+        stopped_order: list[int] = []
+        for _ in range(3):
+            rows = subprocess.check_output(["ps", "-A", "-o", "pid=,ppid="],
+                                           text=True, timeout=1).splitlines()
+            children: dict[int, list[int]] = {}
+            for row in rows:
+                columns = row.split()
+                if len(columns) != 2 or not all(part.isdecimal() for part in columns):
+                    continue
+                pid, parent = map(int, columns)
+                children.setdefault(parent, []).append(pid)
+            queue = [own_pid]
+            discovered = 0
+            for pid in queue:
+                for child in children.get(pid, []):
+                    if child in queue:
+                        continue
                     queue.append(child)
-                    found.append(child)
-        for pid in found:
-            try:
-                os.kill(pid, signal.SIGSTOP)
-            except ProcessLookupError:
-                pass
-        for pid in reversed(found):
+                    if child in stopped:
+                        continue
+                    stopped.add(child)
+                    stopped_order.append(child)
+                    discovered += 1
+                    try:
+                        os.kill(child, signal.SIGSTOP)
+                    except ProcessLookupError:
+                        pass
+            if not discovered:
+                break
+        for pid in reversed(stopped_order):
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -64,7 +78,7 @@ def abort_on_parent_eof() -> None:
             os.killpg(own_pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    os._exit(1)
+    exit_process(1)
 
 
 def clipped(value: Any, limit: int) -> str:

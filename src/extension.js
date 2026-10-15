@@ -116,7 +116,8 @@ class ChatTabs {
     }, null, this.context.subscriptions);
     panel.onDidDispose(() => {
       state.closed = true;
-      state.operation?.stop();
+      try { state.operation?.abort(); }
+      catch (error) { console.error('Codex chat: failed to abort active turn on tab close', error); }
       if (state.threadId && this.owners.get(state.threadId) === state) this.owners.delete(state.threadId);
       if (!state.incompatible) delete this.records[state.panelId];
       void this.saveRecords().catch(error => console.error('Codex chat: failed to save closed tab state', error));
@@ -248,7 +249,7 @@ class ChatTabs {
     this.setThread(state, loaded.thread.id, loaded.thread.name || loaded.thread.preview?.split('\n')[0]?.slice(0, 60));
     this.post(state, { type: 'loaded', threadId: state.threadId, title: state.title, messages: loaded.messages || [] });
     for (const messages of chunks) this.post(state, { type: 'loadedChunk', messages });
-    this.post(state, { type: 'status', text: 'Conversation loaded · read only' });
+    this.post(state, { type: 'status', text: 'Conversation loaded · local files read only' });
     await this.reportPersistence(state);
   }
 
@@ -325,10 +326,10 @@ class ChatTabs {
       if (!selected) throw new Error('Choose a conversation from the current history page.');
       if (state.cwd && selected.cwd && selected.cwd !== state.cwd) {
         const accepted = await vscode.window.showWarningMessage(
-          `This conversation belongs to ${selected.cwd}. Open it in the current workspace with read-only access?`,
-          { modal: true }, 'Open read only'
+          `This conversation belongs to ${selected.cwd}. Open it in the current workspace with read-only local file access? Configured external tools may still act on external services.`,
+          { modal: true }, 'Open with local files read only'
         );
-        if (accepted !== 'Open read only') return;
+        if (accepted !== 'Open with local files read only') return;
       }
       state.mode = 'read_only';
       state.writeApproval = null;

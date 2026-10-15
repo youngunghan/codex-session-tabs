@@ -73,15 +73,30 @@ test('bridge preserves callback errors instead of reporting invalid SDK JSON', a
 
 test('fatal callback and JSON errors win over a later normal exit and ignore later data', async () => {
   const seen = [];
-  const callback = fakeRuntime([{ kind: 'item' }, { kind: 'completed' }], 0, { killNoop: true });
+  let callbackAborts = 0;
+  const callback = fakeRuntime([{ kind: 'item' }, { kind: 'completed' }], 0,
+    { killNoop: true, onAbort: () => { callbackAborts++; } });
   await assert.rejects(callback.run({ op: 'send' }, event => {
     seen.push(event.kind);
     throw new Error('consumer failed');
   }).promise, error => error.message === 'consumer failed');
   assert.deepEqual(seen, ['item']);
-  const malformed = fakeRuntime(['not JSON\n', { kind: 'completed' }], 0, { killNoop: true });
+  assert.ok(callbackAborts >= 1);
+  let malformedAborts = 0;
+  const malformed = fakeRuntime(['not JSON\n', { kind: 'completed' }], 0,
+    { killNoop: true, onAbort: () => { malformedAborts++; } });
   await assert.rejects(malformed.run({ op: 'send' }, () => {}).promise,
     /Invalid Codex SDK response/);
+  assert.ok(malformedAborts >= 1);
+});
+
+test('Stop before the SDK reports a turn hard-aborts instead of waiting for interruption', async () => {
+  let aborts = 0;
+  const runtime = fakeRuntime([], 0, { onAbort: () => { aborts++; } });
+  const operation = runtime.run({ op: 'send', text: 'work' }, () => {});
+  operation.stop();
+  assert.equal(aborts, 1);
+  await assert.rejects(operation.promise, /exited 1/);
 });
 
 test('configured Python executable is restricted to machine settings', () => {
@@ -174,3 +189,52 @@ test('Unix hard abort catches descendants that start their own process group', {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('Stop timeout hard-aborts an unresponsive helper and its detached writer',
+  { skip: process.platform === 'win32' }, async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-tabs-stop-timeout-'));
+    const target = path.join(dir, 'late-write');
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(target)}, 'late'), 500); setInterval(() => {}, 1000)`;
+    const parent = `let seen = false; process.stdin.on('data', data => { if (seen) return; seen = true; const request = JSON.parse(String(data).split('\\n')[0]); const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: 'ignore' }); process.stdout.write(JSON.stringify({requestId: request.requestId, kind: 'turn', descendantPid: child.pid}) + '\\n'); }); setInterval(() => {}, 1000)`;
+    let helper;
+    let descendantPid;
+    try {
+      const runtime = new SdkRuntime({ globalStorageUri: { fsPath: dir }, extensionPath: dir }, {},
+        (_python, _args, options) => {
+          helper = spawn(process.execPath, ['-e', parent], options);
+          return helper;
+        });
+      runtime.ready = true;
+      let ready;
+      const turn = new Promise(resolve => { ready = resolve; });
+      const operation = runtime.run({ op: 'send', text: 'work', cwd: dir }, event => {
+        if (event.kind === 'turn') {
+          descendantPid = event.descendantPid;
+          ready();
+        }
+      });
+      await turn;
+      let fallback;
+      const originalSetTimeout = global.setTimeout;
+      try {
+        global.setTimeout = (callback, delay, ...args) => {
+          if (delay === 10000) {
+            fallback = () => callback(...args);
+            return { unref() {} };
+          }
+          return originalSetTimeout(callback, delay, ...args);
+        };
+        operation.stop();
+      } finally { global.setTimeout = originalSetTimeout; }
+      assert.equal(typeof fallback, 'function');
+      fallback();
+      await assert.rejects(operation.promise, /exited/);
+      await new Promise(resolve => setTimeout(resolve, 700));
+      await assert.rejects(fs.stat(target), { code: 'ENOENT' });
+      assert.throws(() => process.kill(descendantPid, 0), { code: 'ESRCH' });
+    } finally {
+      try { process.kill(descendantPid, 'SIGKILL'); } catch { /* Already stopped. */ }
+      if (helper) try { abortProcessTree(helper); } catch { /* Already stopped. */ }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });

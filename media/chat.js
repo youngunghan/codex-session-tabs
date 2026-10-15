@@ -6,6 +6,9 @@
   const history = $('history');
   const status = $('status');
   let state = vscode.getState() || {};
+  state.failedPrompts = Array.isArray(state.failedPrompts)
+    ? state.failedPrompts.filter(value => typeof value === 'string' && value.length)
+    : (state.failedPrompt ? [state.failedPrompt] : []);
   let busy = false;
   let ready = false;
   let nextCursor = null;
@@ -16,11 +19,13 @@
     state.draft = draft.value;
     vscode.setState({ threadId: state.threadId || null, title: state.title || 'New Codex chat',
       panelId: state.panelId, hostKey: state.hostKey, workspaceKey: state.workspaceKey,
-      draft: draft.value, failedPrompt: state.failedPrompt || null });
+      draft: draft.value, failedPrompts: [...state.failedPrompts], failedPrompt: state.failedPrompts[0] || null });
   }
   function showFailedPrompt() {
-    $('failedPromptPane').hidden = !state.failedPrompt;
-    $('failedPromptText').textContent = state.failedPrompt || '';
+    $('failedPromptPane').hidden = state.failedPrompts.length === 0;
+    $('failedPromptText').textContent = state.failedPrompts[0] || '';
+    $('failedPromptCount').textContent = state.failedPrompts.length > 1
+      ? `${state.failedPrompts.length} prompts awaiting review` : '';
   }
   function textNode(tag, className, text) {
     const node = document.createElement(tag);
@@ -75,14 +80,13 @@
   $('new').addEventListener('click', () => request('new'));
   $('stop').addEventListener('click', () => request('stop'));
   $('restoreFailedPrompt').addEventListener('click', () => {
-    draft.value = state.failedPrompt || draft.value;
-    state.failedPrompt = null;
+    draft.value = state.failedPrompts.shift() || draft.value;
     showFailedPrompt();
     persist();
     draft.focus();
   });
   $('dismissFailedPrompt').addEventListener('click', () => {
-    state.failedPrompt = null;
+    state.failedPrompts.shift();
     showFailedPrompt();
     persist();
   });
@@ -198,7 +202,7 @@
       case 'restoreDraft':
         if (!draft.value || draft.value === message.text) draft.value = message.text;
         else {
-          state.failedPrompt = message.text;
+          state.failedPrompts.push(message.text);
           showFailedPrompt();
         }
         persist();

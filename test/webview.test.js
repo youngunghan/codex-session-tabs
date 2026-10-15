@@ -53,6 +53,7 @@ test('new webview persists an empty draft and no failed prompt', () => {
   assert.equal(ui.get('draft').value, '');
   assert.equal(ui.saved().draft, '');
   assert.equal(ui.saved().failedPrompt, null);
+  assert.deepEqual(Array.from(ui.saved().failedPrompts), []);
 });
 
 test('existing webview hydrates its saved draft and failed prompt', () => {
@@ -61,6 +62,7 @@ test('existing webview hydrates its saved draft and failed prompt', () => {
   assert.equal(ui.get('failedPromptPane').hidden, false);
   assert.equal(ui.get('failedPromptText').textContent, 'older failed prompt');
   assert.equal(ui.saved().failedPrompt, 'older failed prompt');
+  assert.deepEqual(Array.from(ui.saved().failedPrompts), ['older failed prompt']);
 });
 
 test('draft typed before delayed initialization survives saved-state hydration', () => {
@@ -101,4 +103,29 @@ test('failed first prompt is shown separately when a later draft exists', () => 
   const restored = webview(ui.saved());
   assert.equal(restored.get('draft').value, 'second draft');
   assert.equal(restored.get('failedPromptText').textContent, 'first prompt');
+});
+
+test('multiple failed prompts remain recoverable in order through a third draft and reload', () => {
+  const ui = webview();
+  ui.get('draft').value = 'prompt A';
+  ui.get('composer').dispatch('submit');
+  ui.emit({ type: 'user', text: 'prompt A' });
+  ui.get('draft').value = 'prompt B';
+  ui.get('draft').dispatch('input');
+  ui.emit({ type: 'restoreDraft', text: 'prompt A' });
+  ui.get('composer').dispatch('submit');
+  ui.emit({ type: 'user', text: 'prompt B' });
+  ui.get('draft').value = 'draft C';
+  ui.get('draft').dispatch('input');
+  ui.emit({ type: 'restoreDraft', text: 'prompt B' });
+  assert.equal(ui.get('draft').value, 'draft C');
+  assert.deepEqual(Array.from(ui.saved().failedPrompts), ['prompt A', 'prompt B']);
+  assert.equal(ui.get('failedPromptText').textContent, 'prompt A');
+  assert.equal(ui.get('failedPromptCount').textContent, '2 prompts awaiting review');
+  const restored = webview(ui.saved());
+  assert.equal(restored.get('draft').value, 'draft C');
+  assert.deepEqual(Array.from(restored.saved().failedPrompts), ['prompt A', 'prompt B']);
+  restored.get('dismissFailedPrompt').dispatch('click');
+  assert.equal(restored.get('failedPromptText').textContent, 'prompt B');
+  assert.deepEqual(Array.from(restored.saved().failedPrompts), ['prompt B']);
 });

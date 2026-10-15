@@ -134,15 +134,23 @@ class SdkRuntime {
     let stderr = '';
     let eventError;
     let closed = false;
+    let aborted = false;
+    let turnSeen = false;
     let terminalCount = 0;
     let stopTimer;
+    const abortTreeOnce = () => {
+      if (aborted) return;
+      aborted = true;
+      this.abortTree(child);
+    };
+    const hardAbort = () => { if (!closed) abortTreeOnce(); };
     const promise = new Promise((resolve, reject) => {
       child.stdout.on('data', chunk => {
         if (eventError) return;
         stdout += decoder.write(chunk);
         if (Buffer.byteLength(stdout, 'utf8') > 8 * 1024 * 1024) {
           eventError = new Error('Codex SDK output exceeded 8 MB.');
-          child.kill();
+          hardAbort();
           return;
         }
         let newline;
@@ -155,46 +163,53 @@ class SdkRuntime {
             event = JSON.parse(line);
           } catch (error) {
             eventError = new Error(`Invalid Codex SDK response: ${error.message}`);
-            child.kill();
+            hardAbort();
             return;
           }
           try {
             if (event.requestId !== requestId) throw new Error('Mismatched Codex SDK request ID');
+            if (event.kind === 'turn') turnSeen = true;
             if (['list', 'loaded', 'renamed', 'completed', 'error'].includes(event.kind)) terminalCount++;
             if (terminalCount > 1) throw new Error('Multiple Codex SDK terminal events');
             if (event.kind === 'error') eventError = new Error(event.message);
             onEvent(event);
           } catch (error) {
             eventError = error;
-            child.kill();
+            hardAbort();
             return;
           }
         }
       });
       child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
-      child.on('error', reject);
+      child.on('error', error => { reject(error); hardAbort(); });
       child.on('close', code => {
+        if (closed) return;
         closed = true;
         clearTimeout(stopTimer);
         stdout += decoder.end();
         if (stdout.trim() && !eventError) eventError = new Error('Codex SDK ended with an incomplete response.');
+        if (eventError || code !== 0 || terminalCount !== 1) {
+          try { abortTreeOnce(); } catch { /* Keep the original SDK error. */ }
+        }
         if (eventError) reject(eventError);
         else if (code === 0 && terminalCount === 1) resolve();
         else if (code === 0) reject(new Error('Codex SDK ended without exactly one terminal event.'));
         else reject(new Error(stderr || `Codex SDK exited ${code}`));
       });
-      child.stdin.on('error', reject);
+      child.stdin.on('error', error => { reject(error); hardAbort(); });
     });
     child.stdin.write(`${JSON.stringify({ ...request, requestId })}\n`);
     return {
       promise,
       stop() {
         if (closed) return;
+        if (!turnSeen) { hardAbort(); return; }
         child.stdin.write('{"op":"stop"}\n');
-        stopTimer = setTimeout(() => child.kill(), 10000);
+        clearTimeout(stopTimer);
+        stopTimer = setTimeout(hardAbort, 10000);
       },
-      kill() { if (!closed) child.kill(); },
-      abort: () => { if (!closed) this.abortTree(child); }
+      kill: hardAbort,
+      abort: hardAbort
     };
   }
 }
