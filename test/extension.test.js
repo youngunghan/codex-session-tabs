@@ -210,7 +210,94 @@ test('write mode needs explicit confirmation and stays scoped to its existing ta
   assert.equal(newTab.mode, 'read_only');
   assert.equal(state.mode, 'workspace_write');
   api.workspace.isTrusted = false;
-  await assert.rejects(tabs.handle(state, { type: 'mode', mode: 'workspace_write' }), /trust a workspace/);
+  await assert.rejects(tabs.handle(state, { type: 'mode', mode: 'workspace_write' }), /trust this tab’s workspace/);
+});
+
+test('write approval stays on the original folder after multi-root reorder and expires on trust loss', async () => {
+  const { tabs, state, api, calls, posted } = fixture();
+  const original = api.workspace.workspaceFolders[0];
+  const other = { uri: { fsPath: '/other', toString: () => 'file:///other' } };
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  api.workspace.workspaceFolders = [other, original];
+  await tabs.handle(state, { type: 'send', text: 'edit original folder' });
+  assert.equal(calls[0].cwd, '/workspace');
+  assert.equal(calls[0].mode, 'workspace_write');
+  api.workspace.isTrusted = false;
+  await assert.rejects(tabs.handle(state, { type: 'send', text: 'must not edit' }), /approval expired/);
+  assert.equal(calls.length, 1);
+  assert.equal(state.mode, 'read_only');
+  assert.ok(posted.some(event => event.type === 'mode' && event.mode === 'read_only'));
+});
+
+test('removed approved folder and folder changes during approval cannot authorize writes', async () => {
+  const { tabs, state, api, calls } = fixture();
+  const other = { uri: { fsPath: '/other', toString: () => 'file:///other' } };
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  api.workspace.workspaceFolders = [other];
+  await assert.rejects(tabs.handle(state, { type: 'send', text: 'must not edit' }), /approval expired/);
+  assert.equal(calls.length, 0);
+  assert.equal(state.mode, 'read_only');
+  api.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace', toString: () => 'file:///workspace' } }];
+  api.window.showWarningMessage = async () => {
+    api.workspace.workspaceFolders = [other];
+    return 'Allow workspace writes';
+  };
+  await assert.rejects(tabs.handle(state, { type: 'mode', mode: 'workspace_write' }), /changed during approval/);
+  assert.equal(state.mode, 'read_only');
+});
+
+test('active workspace-write turn stops when its folder is removed', async () => {
+  const { tabs, state, api, runtime, posted } = fixture();
+  let changed;
+  let stops = 0;
+  let finish;
+  api.workspace.onDidChangeWorkspaceFolders = callback => {
+    changed = callback;
+    return { dispose() {} };
+  };
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  runtime.run = () => ({ promise: new Promise(resolve => { finish = resolve; }),
+    stop() { stops++; finish(); } });
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  const pending = tabs.handle(state, { type: 'send', text: 'edit while folder changes' });
+  api.workspace.workspaceFolders = [];
+  changed();
+  await assert.rejects(pending, /approval expired during the turn/);
+  assert.equal(stops, 1);
+  assert.equal(state.mode, 'read_only');
+  assert.ok(posted.some(event => event.type === 'mode' && event.mode === 'read_only'));
+});
+
+test('active workspace-write turn stops after trust is revoked without a VS Code trust event', async () => {
+  const { tabs, state, api, runtime } = fixture();
+  let stops = 0;
+  let finish;
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  runtime.run = () => ({ promise: new Promise(resolve => { finish = resolve; }),
+    stop() { stops++; finish(); } });
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  const pending = tabs.handle(state, { type: 'send', text: 'edit while trust changes' });
+  api.workspace.isTrusted = false;
+  await assert.rejects(pending, /approval expired during the turn/);
+  assert.equal(stops, 1);
+  assert.equal(state.mode, 'read_only');
+});
+
+test('synchronous SDK event during trust loss still stops the operation after creation', async () => {
+  const { tabs, state, api, runtime } = fixture();
+  let stops = 0;
+  api.window.showWarningMessage = async () => 'Allow workspace writes';
+  await tabs.handle(state, { type: 'mode', mode: 'workspace_write' });
+  runtime.run = (_request, onEvent) => {
+    api.workspace.isTrusted = false;
+    onEvent({ kind: 'turn', turnId: 'turn-1' });
+    return { promise: Promise.resolve(), stop() { stops++; } };
+  };
+  await assert.rejects(tabs.handle(state, { type: 'send', text: 'must stop' }), /approval expired during the turn/);
+  assert.equal(stops, 1);
+  assert.equal(state.mode, 'read_only');
 });
 
 test('setup failure leaves the SDK unavailable and reports no ready state', async () => {

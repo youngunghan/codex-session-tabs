@@ -78,6 +78,7 @@ class SdkRuntime {
     let stopTimer;
     const promise = new Promise((resolve, reject) => {
       child.stdout.on('data', chunk => {
+        if (eventError) return;
         stdout += decoder.write(chunk);
         if (Buffer.byteLength(stdout, 'utf8') > 8 * 1024 * 1024) {
           eventError = new Error('Codex SDK output exceeded 8 MB.');
@@ -117,9 +118,10 @@ class SdkRuntime {
         clearTimeout(stopTimer);
         stdout += decoder.end();
         if (stdout.trim() && !eventError) eventError = new Error('Codex SDK ended with an incomplete response.');
-        if (code === 0 && !eventError && terminalCount === 1) resolve();
-        else if (code === 0 && terminalCount !== 1) reject(new Error('Codex SDK ended without exactly one terminal event.'));
-        else reject(eventError || new Error(stderr || `Codex SDK exited ${code}`));
+        if (eventError) reject(eventError);
+        else if (code === 0 && terminalCount === 1) resolve();
+        else if (code === 0) reject(new Error('Codex SDK ended without exactly one terminal event.'));
+        else reject(new Error(stderr || `Codex SDK exited ${code}`));
       });
       child.stdin.on('error', reject);
     });

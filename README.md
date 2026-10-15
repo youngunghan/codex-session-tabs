@@ -14,7 +14,7 @@ Open independent Codex chats in VS Code or Cursor editor tabs. Each tab is a web
 
 ## Access mode and limitations
 
-Tabs start in **Read only** mode with approval requests denied. For coding work, choose **Allow workspace writes** in a trusted workspace and confirm the prompt. This permits ordinary edits inside the workspace; approval requests remain denied. The choice is per tab and resets to read only after reload. The sandbox and approval mode are applied when a thread starts or resumes and on every turn.
+Tabs start in **Read only** mode with approval requests denied. For coding work, choose **Allow workspace writes** in a trusted workspace and confirm the prompt. This permits ordinary edits inside the workspace; approval requests remain denied. Each tab stays bound to the folder it opened with, even if multi-root folders are reordered. The choice resets to read only after reload or a thread switch; removing the folder or losing workspace trust also resets it and stops an active write turn. The sandbox and approval mode are applied when a thread starts or resumes and on every turn.
 
 History is local to the extension host. A Remote SSH host, a local desktop, and another computer may have different threads. Threads created in another workspace are shown with their source path; opening one in the current workspace asks for confirmation and resets the tab to read only. A thread active in another Codex client may be locked. The extension reports that condition and does not alter locks. SDK-created threads can be absent from history before their first completed turn; this extension keeps a newly returned ID in the editor tab immediately and does not automatically retry an uncertain first send.
 

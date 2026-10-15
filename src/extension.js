@@ -21,6 +21,12 @@ function workspaceKey() {
   return vscode.workspace.workspaceFolders?.[0]?.uri.toString() || '';
 }
 
+function approvedWorkspacePresent(state) {
+  return !!state.cwd && !!vscode.workspace.isTrusted &&
+    !!vscode.workspace.workspaceFolders?.some(folder =>
+      folder.uri.toString() === state.workspaceKey && folder.uri.fsPath === state.cwd);
+}
+
 class ChatTabs {
   constructor(context, runtime) {
     this.context = context;
@@ -54,9 +60,12 @@ class ChatTabs {
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
     };
     const panelId = validThreadId(saved.panelId) ? saved.panelId : randomUUID();
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const cwd = folder?.uri.fsPath;
+    const workspaceId = folder?.uri.toString() || '';
     const record = this.records[panelId];
-    const restored = record?.hostKey === this.hostKey && record?.workspaceKey === this.workspaceKey ? record : saved;
-    const compatible = restored.hostKey === this.hostKey && restored.workspaceKey === this.workspaceKey;
+    const restored = record?.hostKey === this.hostKey && record?.workspaceKey === workspaceId ? record : saved;
+    const compatible = restored.hostKey === this.hostKey && restored.workspaceKey === workspaceId;
     const threadId = compatible && validThreadId(restored.threadId) ? restored.threadId : null;
     const existing = threadId && this.owners.get(threadId);
     if (existing) {
@@ -69,7 +78,10 @@ class ChatTabs {
       panelId,
       threadId,
       title: threadId && typeof restored.title === 'string' ? restored.title.slice(0, 200) : 'New Codex chat',
+      cwd,
+      workspaceKey: workspaceId,
       mode: 'read_only',
+      writeApproval: null,
       busy: false,
       operation: null,
       closed: false,
@@ -129,7 +141,7 @@ class ChatTabs {
     this.owners.set(id, state);
     state.panel.title = state.title;
     this.records[state.panelId] = {
-      threadId: id, title: state.title, hostKey: this.hostKey, workspaceKey: this.workspaceKey
+      threadId: id, title: state.title, hostKey: this.hostKey, workspaceKey: state.workspaceKey
     };
     state.persistence = this.saveRecords();
     this.post(state, { type: 'thread', threadId: id, title: state.title, hostKey: this.hostKey });
@@ -140,11 +152,43 @@ class ChatTabs {
     if (!this.runtime.ready) throw new Error('Set up the Codex SDK first.');
     state.busy = true;
     this.post(state, { type: 'busy', value: true });
+    const watchingWrite = request.op === 'send' && request.mode === 'workspace_write';
+    let operation;
+    let revoked = false;
+    let guardTimer;
+    let folderListener;
+    const checkWriteApproval = () => {
+      if (!watchingWrite || revoked || (approvedWorkspacePresent(state) &&
+          state.writeApproval?.cwd === state.cwd && state.writeApproval?.workspaceKey === state.workspaceKey)) return;
+      revoked = true;
+      state.mode = 'read_only';
+      state.writeApproval = null;
+      this.post(state, { type: 'mode', mode: state.mode });
+      this.post(state, { type: 'status', error: true,
+        text: 'Workspace write approval changed during this turn. Stopping Codex.' });
+      try { operation?.stop(); }
+      catch { operation?.kill?.(); }
+    };
     try {
-      const operation = this.runtime.run({ ...request, cwd: workspacePath() }, onEvent);
+      operation = this.runtime.run({ ...request, cwd: state.cwd }, event => {
+        checkWriteApproval();
+        onEvent(event);
+      });
       state.operation = operation;
+      if (revoked) {
+        try { operation.stop(); }
+        catch { operation.kill?.(); }
+      }
+      if (watchingWrite) {
+        folderListener = vscode.workspace.onDidChangeWorkspaceFolders?.(checkWriteApproval);
+        guardTimer = setInterval(checkWriteApproval, 250);
+      }
       await operation.promise;
+      checkWriteApproval();
+      if (revoked) throw new Error('Workspace write approval expired during the turn; Codex was stopped.');
     } finally {
+      clearInterval(guardTimer);
+      folderListener?.dispose();
       try {
         await state.persistence;
       } finally {
@@ -190,8 +234,8 @@ class ChatTabs {
       await this.readyPromise;
       this.post(state, {
         type: 'init', ready: this.runtime.ready, threadId: state.threadId, title: state.title,
-        mode: state.mode, busy: state.busy, trusted: !!workspacePath() && vscode.workspace.isTrusted,
-        hostKey: this.hostKey, workspaceKey: this.workspaceKey, panelId: state.panelId
+        mode: state.mode, busy: state.busy, trusted: approvedWorkspacePresent(state),
+        hostKey: this.hostKey, workspaceKey: state.workspaceKey, panelId: state.panelId
       });
       if (state.incompatible) this.post(state, { type: 'status', error: true,
         text: 'This tab came from a different extension host or workspace. Its conversation was not resumed here; use history in the original workspace.' });
@@ -204,15 +248,19 @@ class ChatTabs {
     if (state.busy) throw new Error('This tab is busy. Stop or wait for its current Codex operation.');
     if (message.type === 'mode') {
       if (message.mode === 'workspace_write') {
-        if (!workspacePath() || !vscode.workspace.isTrusted) throw new Error('Open and trust a workspace before enabling writes.');
+        if (!approvedWorkspacePresent(state)) throw new Error('Open and trust this tab’s workspace before enabling writes.');
         const accepted = await vscode.window.showWarningMessage(
-          'Allow Codex to edit files in this workspace? Approval requests remain denied.',
+          `Allow Codex to edit files in ${state.cwd}? Approval requests remain denied.`,
           { modal: true }, 'Allow workspace writes'
         );
         if (accepted !== 'Allow workspace writes') {
           this.post(state, { type: 'mode', mode: state.mode });
           return;
         }
+        if (!approvedWorkspacePresent(state)) throw new Error('This tab’s workspace changed during approval. Try again.');
+        state.writeApproval = { cwd: state.cwd, workspaceKey: state.workspaceKey };
+      } else {
+        state.writeApproval = null;
       }
       state.mode = message.mode;
       this.post(state, { type: 'mode', mode: state.mode });
@@ -236,7 +284,7 @@ class ChatTabs {
       if (owner === state) { this.post(state, { type: 'closeHistory' }); return; }
       const selected = state.historyRows?.get(message.threadId);
       if (!selected) throw new Error('Choose a conversation from the current history page.');
-      if (workspacePath() && selected.cwd && selected.cwd !== workspacePath()) {
+      if (state.cwd && selected.cwd && selected.cwd !== state.cwd) {
         const accepted = await vscode.window.showWarningMessage(
           `This conversation belongs to ${selected.cwd}. Open it in the current workspace with read-only access?`,
           { modal: true }, 'Open read only'
@@ -244,6 +292,7 @@ class ChatTabs {
         if (accepted !== 'Open read only') return;
       }
       state.mode = 'read_only';
+      state.writeApproval = null;
       this.post(state, { type: 'mode', mode: state.mode });
       await this.load(state, message.threadId);
       return;
@@ -261,6 +310,13 @@ class ChatTabs {
     }
     if (message.type === 'send') {
       if (!this.runtime.ready) throw new Error('Set up the Codex SDK first.');
+      if (state.mode === 'workspace_write' && (!approvedWorkspacePresent(state) ||
+          state.writeApproval?.cwd !== state.cwd || state.writeApproval?.workspaceKey !== state.workspaceKey)) {
+        state.mode = 'read_only';
+        state.writeApproval = null;
+        this.post(state, { type: 'mode', mode: state.mode });
+        throw new Error('Workspace write approval expired. Reopen and trust this tab’s workspace, then allow writes again.');
+      }
       let started = false;
       let completed = false;
       try {

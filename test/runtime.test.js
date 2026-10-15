@@ -20,7 +20,8 @@ function fakeRuntime(events, exitCode = 0, options = {}) {
           const request = JSON.parse(stdinText.trim());
           queueMicrotask(() => {
             for (const event of events) {
-              const bytes = Buffer.from(`${JSON.stringify({ requestId: request.requestId, ...event })}\n`, 'utf8');
+              const bytes = Buffer.from(typeof event === 'string' ? event :
+                `${JSON.stringify({ requestId: request.requestId, ...event })}\n`, 'utf8');
               if (options.splitUtf8 && bytes.includes(Buffer.from('한')[0])) {
                 const split = bytes.indexOf(Buffer.from('한')[0]);
                 child.stdout.emit('data', bytes.subarray(0, split + 1));
@@ -31,7 +32,7 @@ function fakeRuntime(events, exitCode = 0, options = {}) {
           });
         }
       };
-      child.kill = () => child.emit('close', 1);
+      child.kill = options.killNoop ? () => {} : () => child.emit('close', 1);
       return child;
     });
   runtime.ready = true;
@@ -61,6 +62,19 @@ test('bridge preserves callback errors instead of reporting invalid SDK JSON', a
   const runtime = fakeRuntime([{ kind: 'item', role: 'assistant', text: 'valid JSON' }]);
   await assert.rejects(runtime.run({ op: 'send' }, () => { throw new Error('application consumer failed'); }).promise,
     error => error.message === 'application consumer failed');
+});
+
+test('fatal callback and JSON errors win over a later normal exit and ignore later data', async () => {
+  const seen = [];
+  const callback = fakeRuntime([{ kind: 'item' }, { kind: 'completed' }], 0, { killNoop: true });
+  await assert.rejects(callback.run({ op: 'send' }, event => {
+    seen.push(event.kind);
+    throw new Error('consumer failed');
+  }).promise, error => error.message === 'consumer failed');
+  assert.deepEqual(seen, ['item']);
+  const malformed = fakeRuntime(['not JSON\n', { kind: 'completed' }], 0, { killNoop: true });
+  await assert.rejects(malformed.run({ op: 'send' }, () => {}).promise,
+    /Invalid Codex SDK response/);
 });
 
 test('configured Python executable is restricted to machine settings', () => {
