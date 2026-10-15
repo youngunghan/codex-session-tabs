@@ -18,7 +18,8 @@ function loadExtension() {
     workspace: { workspaceFolders: [{ uri: { fsPath: '/workspace', toString: () => 'file:///workspace' } }], isTrusted: true,
       getConfiguration: () => ({ get: () => '' }) },
     commands: { registerCommand: () => ({ dispose() {} }) },
-    window: { showWarningMessage: async () => 'Open with local files read only',
+    window: { tabGroups: { all: [], onDidChangeTabs: () => ({ dispose() {} }) },
+      showWarningMessage: async () => 'Open with local files read only',
       registerWebviewPanelSerializer: () => ({ dispose() {} }),
       withProgress: async (_options, callback) => callback({ report() {} }) },
     ProgressLocation: { Notification: 1 }

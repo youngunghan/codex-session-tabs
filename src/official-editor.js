@@ -56,4 +56,33 @@ async function openOfficialTab(api) {
   return uri;
 }
 
-module.exports = { openOfficialTab, checkOfficialEditor, EDITOR_ID, NEW_PANEL_PATH };
+function retainOfficialHistoryTabs(api, reportError = console.error) {
+  let disposed = false;
+  const attempted = new WeakSet();
+  const pin = tab => {
+    if (disposed || attempted.has(tab) || !tab.isPreview ||
+        !(tab.input instanceof api.TabInputCustom) || tab.input.viewType !== EDITOR_ID) return;
+    const uri = tab.input.uri;
+    if (uri.scheme !== 'openai-codex' || uri.authority !== 'route' ||
+        !/^\/(local|remote)\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/?$/i.test(uri.path)) return;
+    // Keep Editor pins the existing webview without reopening the document,
+    // activating it, or recreating a panel the user has just closed.
+    const group = api.window.tabGroups.all.find(item => item.tabs.includes(tab));
+    if (!group || !tab.isPreview) return;
+    attempted.add(tab);
+    void (async () => {
+      try {
+        await api.commands.executeCommand('workbench.action.keepEditor', uri);
+      } catch (error) {
+        if (!disposed) reportError('Codex Session Tabs: failed to keep a history tab open', error);
+      }
+    })();
+  };
+  const listener = api.window.tabGroups.onDidChangeTabs(event => {
+    for (const tab of [...event.opened, ...event.changed]) pin(tab);
+  });
+  for (const group of api.window.tabGroups.all) for (const tab of group.tabs) pin(tab);
+  return { dispose() { disposed = true; listener.dispose(); } };
+}
+
+module.exports = { openOfficialTab, checkOfficialEditor, retainOfficialHistoryTabs, EDITOR_ID, NEW_PANEL_PATH };

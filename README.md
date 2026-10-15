@@ -16,6 +16,10 @@ The default **Codex: New Codex Tab** command, toolbar button, and `Ctrl+Alt+N` o
 
 The official extension owns its model selector, access and approval modes, tools, and history UI. This wrapper opens new official conversation tabs; it does not guarantee that choosing a saved conversation will stay in the same panel, or that renaming a conversation will update an already-open editor tab title in real time.
 
+Saved conversations opened from the official history can initially be VS Code preview tabs (italic tab titles). Starting in 0.6.2, this extension automatically applies **Keep Editor** to official local/remote conversation previews so that the next history selection keeps the earlier conversation open. You do not need to double-click each history tab. This keeps the existing webview; it does not reopen it, close a source tab, change global preview settings, or change SDK chat records.
+
+This handling runs after the editor-tab event arrives. If the IDE replaces a preview before that event is delivered during exceptionally fast consecutive selections, this extension cannot recover the closed panel or its unsent input. It does not reopen closed tabs. Official history may still open a separate tab rather than changing the current panel; the official extension controls that behavior.
+
 Previous reports of some existing Codex tabs accepting text but hanging after send, and failing to open file links, remain unresolved. The root cause is unknown, and returning to the official editor route is not evidence that the prior issue has been fixed.
 
 ## Optional SDK chats
@@ -36,6 +40,10 @@ The SDK UI shows text messages, streamed responses, command output, and changed 
 
 The default **Codex: New Codex Tab** command now opens the official Codex conversation editor again. The SDK chat remains available through **Codex: New SDK Chat Tab**. Existing SDK panel and thread records are retained; this change does not modify the official extension or claim to fix the earlier send-hang or file-link issue.
 
+## Upgrade from 0.6.1
+
+Version 0.6.2 fixes the normal history-preview replacement flow by keeping official conversation tabs automatically. After installing the update, reload the IDE window when your current work is finished. The default interface remains the official Codex interface.
+
 ## Build and test
 
 ```sh
@@ -45,6 +53,6 @@ npm run test:integration
 npm run package
 ```
 
-`npm test` checks the extension logic without contacting Codex. By default, `test:integration` opens two independent SDK chat tabs in an isolated VS Code test host. If `CODEX_EXTENSION_PATH` points to an installed official Codex extension, the integration test also loads that extension and checks that the default command opens two independent `chatgpt.conversationEditor` tabs. The official-editor check covers tab opening; it does not send a live chat message or verify same-panel history behavior, live rename synchronization, restart restoration, or resolution of the earlier send-hang issue. CI runs the default SDK integration path unless the official extension path is supplied.
+`npm test` checks the extension logic without contacting Codex. By default, `test:integration` opens two independent SDK chat tabs in an isolated VS Code test host. If `CODEX_EXTENSION_PATH` points to an installed official Codex extension, the integration test also loads that extension and checks that the default command opens two independent `chatgpt.conversationEditor` tabs. Supplying two existing diagnostic conversation UUIDs in `CODEX_HISTORY_THREAD_IDS` (comma-separated) additionally checks that two history previews become permanent, including back-to-back opens, without duplicate editors or replacing the new tabs. The official-editor check does not send a live chat message or verify same-panel history behavior, live rename synchronization, restart restoration, or resolution of the earlier send-hang issue. CI runs the default SDK integration path unless the official extension path is supplied.
 
 Publisher: `youngunghan`. Extension ID: `youngunghan.yuhan-codex-session-tabs`.

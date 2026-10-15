@@ -65,6 +65,48 @@ async function run() {
     assert.ok(officialTabs.some(tab => tab.input.uri.toString() === first.toString()));
     assert.ok(officialTabs.some(tab => tab.input.uri.toString() === second.toString()));
     console.log('CODEX_OFFICIAL_KEY_RESULT independent_tabs=2 viewType=chatgpt.conversationEditor');
+    const historyIds = process.env.CODEX_HISTORY_THREAD_IDS?.split(',');
+    if (historyIds?.length === 2 && historyIds.every(id => /^[0-9a-f-]{36}$/.test(id))) {
+      const historyUris = historyIds.map(id => vscode.Uri.from({ scheme: 'openai-codex', authority: 'route', path: `/local/${id}` }));
+      for (const uri of historyUris) {
+        // The installed official history handler uses vscode.open without
+        // preview:false. Exercise that exact path, with preview enabled.
+        await vscode.commands.executeCommand('vscode.open', uri, { preview: true });
+        let pinned = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const opened = vscode.window.tabGroups.all.flatMap(group => group.tabs)
+            .find(tab => tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === uri.toString());
+          if (opened && !opened.isPreview) { pinned = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.ok(pinned, 'each official history preview must become permanent');
+      }
+      const retained = vscode.window.tabGroups.all.flatMap(group => group.tabs);
+      for (const uri of [...historyUris, first, second]) {
+        const matching = retained.filter(tab => tab.input instanceof vscode.TabInputCustom &&
+          tab.input.uri.toString() === uri.toString());
+        assert.equal(matching.length, 1, 'keeping a history tab must not create a duplicate webview editor');
+        assert.equal(matching[0].isPreview, false, 'all new and history tabs must remain permanent');
+      }
+      console.log('CODEX_HISTORY_KEY_RESULT history_tabs=2 pinned=true new_tabs_retained=2');
+      await vscode.window.tabGroups.close(retained.filter(tab => tab.input instanceof vscode.TabInputCustom &&
+        historyUris.some(uri => uri.toString() === tab.input.uri.toString())));
+      // Back-to-back opens do not wait for our listener to pin the first tab.
+      for (const uri of historyUris) await vscode.commands.executeCommand('vscode.open', uri, { preview: true });
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const all = vscode.window.tabGroups.all.flatMap(group => group.tabs);
+        if (historyUris.every(uri => all.some(tab => tab.input instanceof vscode.TabInputCustom &&
+          tab.input.uri.toString() === uri.toString() && !tab.isPreview))) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const consecutive = vscode.window.tabGroups.all.flatMap(group => group.tabs);
+      for (const uri of historyUris) assert.equal(consecutive.filter(tab =>
+        tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === uri.toString() && !tab.isPreview).length, 1);
+      assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.input.uri.toString(), historyUris[1].toString(),
+        'keeping an older history tab must not activate it over the latest selection');
+      console.log('CODEX_HISTORY_CONSECUTIVE_KEY_RESULT history_tabs=2 pinned=true duplicates=0');
+      officialTabs = consecutive.filter(tab => tab.input instanceof vscode.TabInputCustom && tab.input.viewType === 'chatgpt.conversationEditor');
+    } else console.log('CODEX_HISTORY_CHECK skipped: supply two diagnostic thread IDs in CODEX_HISTORY_THREAD_IDS.');
     await vscode.window.tabGroups.close(officialTabs);
   } else console.log('CODEX_OFFICIAL_CHECK skipped: set CODEX_EXTENSION_PATH to verify the installed official editor. SDK panels were tested.');
   if (process.env.CODEX_TABS_TEST_MARKER) fs.writeFileSync(process.env.CODEX_TABS_TEST_MARKER, 'passed');

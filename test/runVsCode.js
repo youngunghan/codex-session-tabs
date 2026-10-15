@@ -39,7 +39,8 @@ async function main() {
       extensionTestsPath: path.resolve(__dirname, 'vscode.integration.js'),
       launchArgs: [workspace, '--disable-workspace-trust', '--user-data-dir', path.join(directory, 'user')],
       extensionTestsEnv: { CODEX_TABS_TEST_MARKER: marker,
-        ...(process.env.CODEX_EXTENSION_PATH ? { CODEX_EXTENSION_PATH: process.env.CODEX_EXTENSION_PATH } : {}) }
+        ...(process.env.CODEX_EXTENSION_PATH ? { CODEX_EXTENSION_PATH: process.env.CODEX_EXTENSION_PATH } : {}),
+        ...(process.env.CODEX_HISTORY_THREAD_IDS ? { CODEX_HISTORY_THREAD_IDS: process.env.CODEX_HISTORY_THREAD_IDS } : {}) }
     });
     if (!fs.existsSync(marker)) throw new Error('VS Code integration marker was not written.');
   } finally {

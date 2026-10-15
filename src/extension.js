@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { SdkRuntime } = require('./runtime');
 const { validateMessage, validThreadId } = require('./protocol');
 const { html } = require('./webview');
-const { openOfficialTab } = require('./official-editor');
+const { openOfficialTab, retainOfficialHistoryTabs } = require('./official-editor');
 
 const VIEW_TYPE = 'codexSessionTabs.chat';
 const COMMAND_ID = 'codexSessionTabs.newTab';
@@ -407,6 +407,7 @@ function activate(context) {
   const runtime = new SdkRuntime(context, vscode);
   const tabs = new ChatTabs(context, runtime);
   activeTabs = tabs;
+  context.subscriptions.push(retainOfficialHistoryTabs(vscode));
   context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, async () => {
     try { return await openOfficialTab(vscode); }
     catch (error) { vscode.window.showErrorMessage(`Codex: New Codex Tab failed: ${error.message}`); }
