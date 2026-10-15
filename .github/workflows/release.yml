@@ -1,0 +1,128 @@
+name: Publish Open VSX release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-vsx-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      vsix_sha256: ${{ steps.package.outputs.vsix_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check release tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match package version $version" >&2
+            exit 1
+          fi
+          status="$(curl -sS -o /dev/null -w '%{http_code}' "https://open-vsx.org/api/youngunghan/yuhan-codex-session-tabs/$version")"
+          if [[ "$status" == 200 ]]; then
+            echo "Version $version already exists on Open VSX" >&2
+            exit 1
+          fi
+          if [[ "$status" != 404 ]]; then
+            echo "Cannot check Open VSX version $version (HTTP $status)" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - name: Test editor tabs
+        run: xvfb-run -a npm run test:integration
+      - name: Package and fingerprint VSIX
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run package -- --out release.vsix
+          unzip -p release.vsix extension/package.json | node -e '
+            let source = "";
+            process.stdin.on("data", chunk => source += chunk);
+            process.stdin.on("end", () => {
+              const packaged = JSON.parse(source);
+              const expected = require("./package.json");
+              if (packaged.version !== expected.version || packaged.publisher !== expected.publisher || packaged.name !== expected.name) {
+                throw new Error("VSIX identity does not match package.json");
+              }
+            });'
+          echo "vsix_sha256=$(sha256sum release.vsix | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-vsix
+          path: release.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: open-vsx
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-vsix
+      - name: Check packaged artifact
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.vsix_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$EXPECTED_SHA256  release.vsix" | sha256sum --check --status
+      - name: Publish the packaged VSIX with Open VSX trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u OVSX_PAT ./node_modules/.bin/ovsx publish release.vsix --trusted-publishing
+      - name: Check downloadable Open VSX version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          url="https://open-vsx.org/api/youngunghan/yuhan-codex-session-tabs/$version"
+          for attempt in {1..12}; do
+            if curl -fsS "$url" -o published.json; then
+              if download_url="$(node -e '
+                const fs = require("node:fs");
+                const info = JSON.parse(fs.readFileSync("published.json", "utf8"));
+                const expected = require("./package.json");
+                const url = new URL(info.files?.download || "");
+                if (info.version !== expected.version || info.namespace !== expected.publisher || info.name !== expected.name || info.downloadable !== true || url.protocol !== "https:" || url.hostname !== "open-vsx.org") {
+                  process.exit(1);
+                }
+                process.stdout.write(url.href);
+              ')"; then
+                curl -fsSL "$download_url" -o published.vsix
+                unzip -tq published.vsix
+                echo "Open VSX version $version is downloadable"
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "Open VSX version $version did not become downloadable" >&2
+          exit 1
