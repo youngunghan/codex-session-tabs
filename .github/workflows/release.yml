@@ -19,10 +19,22 @@ jobs:
       vsix_sha256: ${{ steps.package.outputs.vsix_sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      - name: Check release commit is on master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          release_sha="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$release_sha" refs/remotes/origin/master; then
+            echo "Release commit $release_sha is not on origin/master" >&2
+            exit 1
+          fi
       - name: Check release tag and package version
         shell: bash
         run: |
@@ -78,6 +90,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -97,6 +111,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          release_sha="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$release_sha" refs/remotes/origin/master; then
+            echo "Release commit $release_sha is not on origin/master" >&2
+            exit 1
+          fi
           env -u OVSX_PAT ./node_modules/.bin/ovsx publish release.vsix --trusted-publishing
       - name: Check downloadable Open VSX version
         shell: bash
