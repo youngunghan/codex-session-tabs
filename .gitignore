@@ -4,3 +4,5 @@ node_modules/
 .integration*.log
 .compat/
 .install-test/
+**/__pycache__/
+**/*.pyc

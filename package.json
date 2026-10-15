@@ -1,54 +1,69 @@
 {
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
-  "description": "Open and organize official Codex chats in editor tabs.",
-  "version": "0.5.0",
+  "description": "Independent Codex editor chats powered by the official Python SDK.",
+  "version": "0.6.0",
   "publisher": "youngunghan",
-  "repository": { "type": "git", "url": "https://github.com/youngunghan/codex-session-tabs.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/youngunghan/codex-session-tabs.git"
+  },
   "license": "MIT",
-  "engines": { "vscode": "^1.96.2" },
-  "categories": ["Other", "Chat"],
-  "keywords": ["codex", "tabs", "chat", "sessions"],
+  "engines": {
+    "vscode": "^1.96.2"
+  },
+  "categories": [
+    "Other",
+    "Chat"
+  ],
+  "keywords": [
+    "codex",
+    "tabs",
+    "chat",
+    "sessions"
+  ],
   "main": "./src/extension.js",
-  "extensionKind": ["workspace"],
-  "activationEvents": ["onStartupFinished", "onView:codexSessionTabs.sessions", "onCommand:codexSessionTabs.newTab"],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codexSessionTabs.newTab",
+    "onWebviewPanel:codexSessionTabs.chat"
+  ],
   "contributes": {
     "configuration": {
       "title": "Codex Session Tabs",
       "properties": {
-        "codexSessionTabs.replaceNewTabOnHistoryOpen": {
-          "type": "boolean",
-          "default": true,
-          "description": "Replace the active tab created by Codex Session Tabs when a saved Codex conversation opens in it. Detection is inferred from editor tab events, so any command or extension that opens a saved conversation URI while a managed tab is active may trigger replacement; Codex Sessions: Reopen Conversation is suppressed. This defaults to true in 0.5.0. The replaced tab and unsent input may be lost. Set false to keep both tabs."
+        "codexSessionTabs.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python 3.11\u20133.13 executable used to create the private Codex SDK environment on first setup. Empty uses python3 (python on Windows)."
         }
       }
     },
     "commands": [
-      { "command": "codexSessionTabs.newTab", "title": "Codex: New Codex Tab", "icon": "$(sparkle-filled)" },
-      { "command": "codexSessionTabs.focusTab", "title": "Codex Sessions: Focus Tab" },
-      { "command": "codexSessionTabs.renameTab", "title": "Codex Sessions: Rename List Label", "icon": "$(edit)" },
-      { "command": "codexSessionTabs.reopenSession", "title": "Codex Sessions: Reopen Conversation", "icon": "$(history)" }
+      {
+        "command": "codexSessionTabs.newTab",
+        "title": "Codex: New Codex Tab",
+        "icon": "$(sparkle-filled)"
+      }
     ],
-    "views": {
-      "explorer": [{ "id": "codexSessionTabs.sessions", "name": "Codex Sessions" }]
-    },
     "menus": {
-      "editor/title": [{ "command": "codexSessionTabs.newTab", "group": "navigation@1" }],
-      "view/title": [{ "command": "codexSessionTabs.newTab", "when": "view == codexSessionTabs.sessions", "group": "navigation@1" }],
-      "view/item/context": [
-        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "inline@1" },
-        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "inline@1" },
-        { "command": "codexSessionTabs.reopenSession", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "inline@2" },
-        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexOpenTab", "group": "1_modify@1" },
-        { "command": "codexSessionTabs.renameTab", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "1_modify@1" },
-        { "command": "codexSessionTabs.reopenSession", "when": "view == codexSessionTabs.sessions && viewItem == codexRecentSession", "group": "1_modify@2" }
+      "editor/title": [
+        {
+          "command": "codexSessionTabs.newTab",
+          "group": "navigation@1"
+        }
       ]
     },
-    "keybindings": [{
-      "command": "codexSessionTabs.newTab",
-      "key": "ctrl+alt+n",
-      "mac": "ctrl+alt+n"
-    }]
+    "keybindings": [
+      {
+        "command": "codexSessionTabs.newTab",
+        "key": "ctrl+alt+n",
+        "mac": "ctrl+alt+n"
+      }
+    ]
   },
   "scripts": {
     "test": "node --test test/*.test.js",
