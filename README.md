@@ -1,28 +1,40 @@
 # Codex Session Tabs
 
-Open independent Codex chats in VS Code or Cursor editor tabs. Each tab is a webview owned by this extension. The chat backend is the official [`openai-codex` Python SDK](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md), using its matching Codex runtime. This community extension is not affiliated with OpenAI.
+Open independent Codex chats in VS Code or Cursor editor tabs. **Codex: New Codex Tab** opens the official Codex conversation editor in a new tab; this extension leaves its UI and chat behavior to the official OpenAI Codex extension. An optional SDK chat is also available as **Codex: New SDK Chat Tab**. This community extension is not affiliated with OpenAI.
 
 ## Get started
 
-1. Install Python 3.11–3.13 and sign in to Codex on the same machine or Remote SSH host where this extension runs. Existing Codex authentication is reused by the SDK.
-2. Install this extension. In a Remote SSH window, install it on the remote workspace host.
-3. Click the Codex swirl icon in an editor title bar, run **Codex: New Codex Tab**, or press `Ctrl+Alt+N`.
-4. In the new tab, click **Set up Codex SDK**. The extension creates a private Python environment in VS Code's extension global storage and installs its pinned `openai-codex` 0.162.1 SDK with the matching runtime. This is separate from the official Codex VS Code/Cursor extension and does not replace or downgrade it. A notification shows progress. If Python is not on `PATH`, set `codexSessionTabs.pythonPath` to its executable and retry.
-5. Send a message. The tab stays provisional until this first send; it then keeps the returned Codex thread ID. The first prompt becomes an initial thread name. Further messages continue that thread.
+1. Install and sign in to the official OpenAI Codex extension (`openai.chatgpt`) in the same VS Code or Cursor window.
+2. Install Codex Session Tabs.
+3. Click the Codex toolbar button, run **Codex: New Codex Tab**, or press `Ctrl+Alt+N`. This opens a separate official Codex conversation tab. The official extension controls the composer, model selection, access mode, tools, and conversation history.
+4. To use the optional SDK chat, run **Codex: New SDK Chat Tab**. Install Python 3.11–3.13 on the machine or Remote SSH host where this extension runs, then click **Set up Codex SDK** in the new tab. The extension creates a private Python environment in VS Code's extension global storage and installs its pinned `openai-codex` 0.162.1 SDK with the matching runtime. Existing Codex authentication is reused. This SDK environment is separate from the official extension and does not replace or downgrade it. If Python is not on `PATH`, set `codexSessionTabs.pythonPath` to its executable and retry.
+5. Send a message in the SDK chat. Its first send stores the returned Codex thread ID in that tab; later messages continue the same thread.
 
-**History** lists up to 50 local threads per page from the SDK, with **More** for the next page. Selecting a thread changes the conversation in that tab. If another tab in this window already owns the thread, that tab is focused instead. Renaming calls the SDK's thread rename operation and immediately changes this extension's editor tab title. **New chat** opens another editor tab and leaves the current conversation in place. Closing or switching a tab closes its SDK client after the current operation.
+## Official Codex tabs
 
-## Access mode and limitations
+The default **Codex: New Codex Tab** command, toolbar button, and `Ctrl+Alt+N` open the official extension's `chatgpt.conversationEditor` using its `/extension/panel/new` route with a unique tab identifier. This requires the official `openai.chatgpt` extension to be installed and to provide the expected custom editor and route. If those checks fail, this extension reports an error; it does not silently switch to SDK chat. It does not modify the official extension's files.
 
-Tabs start in **Read only (local files)** mode with approval requests denied. For coding work, choose **Allow workspace file writes** in a trusted workspace and confirm the prompt. This permits ordinary edits inside the workspace; approval requests remain denied. These modes control local filesystem access; configured external tools, including MCP servers or connectors inherited from Codex configuration, may still be available in either mode. The extension does not currently disable those tools. Each tab stays bound to the folder it opened with, even if multi-root folders are reordered or the window reloads. The choice resets to local-file read only after reload or a thread switch; removing the folder or losing workspace trust also resets it and terminates the active helper process tree. Trust revocation is checked at SDK events and every 250 ms, so edits made before detection cannot be undone. The sandbox and approval mode are applied when a thread starts or resumes and on every turn.
+The official extension owns its model selector, access and approval modes, tools, and history UI. This wrapper opens new official conversation tabs; it does not guarantee that choosing a saved conversation will stay in the same panel, or that renaming a conversation will update an already-open editor tab title in real time.
 
-History is local to the extension host. A Remote SSH host, a local desktop, and another computer may have different threads. Threads created in another workspace are shown with their source path; opening one in the current workspace asks for confirmation and resets local file access to read only. A thread active in another Codex client may be locked. The extension reports that condition and does not alter locks. SDK-created threads can be absent from history before their first completed turn; this extension keeps a newly returned ID in the editor tab immediately and does not automatically retry an uncertain first send. Failed and interrupted turn prompts remain recoverable in the composer or an ordered failed-prompt list.
+Previous reports of some existing Codex tabs accepting text but hanging after send, and failing to open file links, remain unresolved. The root cause is unknown, and returning to the official editor route is not evidence that the prior issue has been fixed.
 
-The UI shows text messages, streamed responses, command output, and changed file paths. It is intentionally smaller than the official Codex extension UI. It does not handle interactive approval requests, attachments, cloud conversation history, or every tool interaction. Message content is rendered as text under a restrictive webview Content Security Policy. The extension does not read Codex rollout files, call app-server JSON-RPC directly, or use private APIs from the official VS Code extension.
+## Optional SDK chats
 
-## Upgrade from 0.5.x
+The **Codex: New SDK Chat Tab** command opens this extension's own chat panel and uses the official [`openai-codex` Python SDK](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md) with its matching Codex runtime. It is separate from the official conversation editor and remains available when explicitly requested.
 
-The **Codex: New Codex Tab** command now opens this extension's own editor chat instead of the official Codex custom editor. Existing official Codex tabs stay open in the editor, but this version no longer manages their tab replacement, local list labels, or recently closed list. Saved local Codex threads that the SDK can list may be opened from **History** in a new tab. Unsent text in an old official tab is not migrated. The official Codex extension can still be used separately.
+**History** lists up to 50 local SDK threads per page, with **More** for the next page. Selecting a thread changes the conversation in that SDK tab. If another SDK tab in this window already owns the thread, that tab is focused instead. Renaming calls the SDK's thread rename operation and changes this extension's editor tab title. **New SDK Chat Tab** opens another SDK editor tab and leaves the current conversation in place. Existing SDK panel and thread records are retained; official extension conversations and SDK conversations are managed by their respective interfaces.
+
+## SDK access mode and limitations
+
+SDK tabs start in **Read only (local files)** mode with approval requests denied. For coding work, choose **Allow workspace file writes** in a trusted workspace and confirm the prompt. This permits ordinary edits inside the workspace; approval requests remain denied. These modes control local filesystem access; configured external tools, including MCP servers or connectors inherited from Codex configuration, may still be available in either mode. The extension does not currently disable those tools. Each SDK tab stays bound to the folder it opened with, even if multi-root folders are reordered or the window reloads. The choice resets to local-file read only after reload or a thread switch; removing the folder or losing workspace trust also resets it and terminates the active helper process tree. Trust revocation is checked at SDK events and every 250 ms, so edits made before detection cannot be undone. The sandbox and approval mode are applied when a thread starts or resumes and on every turn.
+
+SDK history is local to the extension host. A Remote SSH host, a local desktop, and another computer may have different threads. Threads created in another workspace are shown with their source path; opening one in the current workspace asks for confirmation and resets local file access to read only. A thread active in another Codex client may be locked. The extension reports that condition and does not alter locks. SDK-created threads can be absent from history before their first completed turn; this extension keeps a newly returned ID in the editor tab immediately and does not automatically retry an uncertain first send. Failed and interrupted turn prompts remain recoverable in the composer or an ordered failed-prompt list.
+
+The SDK UI shows text messages, streamed responses, command output, and changed file paths. It does not provide the official Codex UI, interactive approval requests, attachments, cloud conversation history, or every tool interaction. Message content is rendered as text under a restrictive webview Content Security Policy. The SDK implementation does not read Codex rollout files, call app-server JSON-RPC directly, or use private APIs from the official VS Code extension.
+
+## Upgrade from 0.6.0
+
+The default **Codex: New Codex Tab** command now opens the official Codex conversation editor again. The SDK chat remains available through **Codex: New SDK Chat Tab**. Existing SDK panel and thread records are retained; this change does not modify the official extension or claim to fix the earlier send-hang or file-link issue.
 
 ## Build and test
 
@@ -33,6 +45,6 @@ npm run test:integration
 npm run package
 ```
 
-`npm test` checks the webview protocol and tab controller without contacting Codex. `test:integration` opens two independent editor panels in an isolated VS Code test host. A separate Python bridge smoke test can use a sacrificial `CODEX_HOME` to avoid touching personal session state. These checks do not establish full VS Code/Cursor GUI parity or live chat reliability on every host.
+`npm test` checks the extension logic without contacting Codex. By default, `test:integration` opens two independent SDK chat tabs in an isolated VS Code test host. If `CODEX_EXTENSION_PATH` points to an installed official Codex extension, the integration test also loads that extension and checks that the default command opens two independent `chatgpt.conversationEditor` tabs. The official-editor check covers tab opening; it does not send a live chat message or verify same-panel history behavior, live rename synchronization, restart restoration, or resolution of the earlier send-hang issue. CI runs the default SDK integration path unless the official extension path is supplied.
 
 Publisher: `youngunghan`. Extension ID: `youngunghan.yuhan-codex-session-tabs`.

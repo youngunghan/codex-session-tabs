@@ -1,8 +1,8 @@
 {
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
-  "description": "Independent Codex editor chats powered by the official Python SDK.",
-  "version": "0.6.0",
+  "description": "Open multiple editor tabs with the original official Codex interface.",
+  "version": "0.6.1",
   "publisher": "youngunghan",
   "repository": {
     "type": "git",
@@ -51,6 +51,10 @@
           "light": "icons/codex-light.svg",
           "dark": "icons/codex-dark.svg"
         }
+      },
+      {
+        "command": "codexSessionTabs.newSdkTab",
+        "title": "Codex: New SDK Chat Tab"
       }
     ],
     "menus": {

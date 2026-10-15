@@ -6,8 +6,8 @@ const vscode = require('vscode');
 
 async function run() {
   const before = vscode.window.tabGroups.all.flatMap(group => group.tabs).length;
-  await vscode.commands.executeCommand('codexSessionTabs.newTab');
-  await vscode.commands.executeCommand('codexSessionTabs.newTab');
+  await vscode.commands.executeCommand('codexSessionTabs.newSdkTab');
+  await vscode.commands.executeCommand('codexSessionTabs.newSdkTab');
   let tabs;
   for (let attempt = 0; attempt < 50; attempt++) {
     tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs);
@@ -48,6 +48,25 @@ async function run() {
     'renaming the real SDK thread must immediately update our editor tab label');
   await vscode.window.tabGroups.close(renamedTabs.filter(tab =>
     ['Second thread', 'Renamed Codex chat'].includes(tab.label)));
+  if (process.env.CODEX_EXTENSION_PATH) {
+    const official = vscode.extensions.getExtension('openai.chatgpt');
+    assert.ok(official, 'official Codex must be installed for the original-interface check');
+    const first = await vscode.commands.executeCommand('codexSessionTabs.newTab');
+    const second = await vscode.commands.executeCommand('codexSessionTabs.newTab');
+    assert.ok(first && second, 'default command must open the official editor');
+    assert.notEqual(first.toString(), second.toString());
+    let officialTabs;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      officialTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs)
+        .filter(tab => tab.input instanceof vscode.TabInputCustom && tab.input.viewType === 'chatgpt.conversationEditor');
+      if ([first, second].every(uri => officialTabs.some(tab => tab.input.uri.toString() === uri.toString()))) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(officialTabs.some(tab => tab.input.uri.toString() === first.toString()));
+    assert.ok(officialTabs.some(tab => tab.input.uri.toString() === second.toString()));
+    console.log('CODEX_OFFICIAL_KEY_RESULT independent_tabs=2 viewType=chatgpt.conversationEditor');
+    await vscode.window.tabGroups.close(officialTabs);
+  } else console.log('CODEX_OFFICIAL_CHECK skipped: set CODEX_EXTENSION_PATH to verify the installed official editor. SDK panels were tested.');
   if (process.env.CODEX_TABS_TEST_MARKER) fs.writeFileSync(process.env.CODEX_TABS_TEST_MARKER, 'passed');
 }
 

@@ -5,9 +5,11 @@ const { randomUUID } = require('node:crypto');
 const { SdkRuntime } = require('./runtime');
 const { validateMessage, validThreadId } = require('./protocol');
 const { html } = require('./webview');
+const { openOfficialTab } = require('./official-editor');
 
 const VIEW_TYPE = 'codexSessionTabs.chat';
 const COMMAND_ID = 'codexSessionTabs.newTab';
+const SDK_COMMAND_ID = 'codexSessionTabs.newSdkTab';
 let activeTabs;
 
 function workspacePath() {
@@ -38,7 +40,7 @@ class ChatTabs {
     this.recordWrite = Promise.resolve();
     this.panels = new Set();
     this.owners = new Map();
-    this.readyPromise = runtime.check();
+    this.readyPromise = undefined;
   }
 
   open() {
@@ -272,7 +274,7 @@ class ChatTabs {
   async handle(state, message) {
     if (state.closed) return;
     if (message.type === 'ready') {
-      await this.readyPromise;
+      await (this.readyPromise ||= this.runtime.check());
       this.post(state, {
         type: 'init', ready: this.runtime.ready, threadId: state.threadId, title: state.title,
         mode: state.mode, busy: state.busy, trusted: approvedWorkspacePresent(state),
@@ -405,7 +407,11 @@ function activate(context) {
   const runtime = new SdkRuntime(context, vscode);
   const tabs = new ChatTabs(context, runtime);
   activeTabs = tabs;
-  context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, () => tabs.open()));
+  context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, async () => {
+    try { return await openOfficialTab(vscode); }
+    catch (error) { vscode.window.showErrorMessage(`Codex: New Codex Tab failed: ${error.message}`); }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand(SDK_COMMAND_ID, () => tabs.open()));
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, {
     async deserializeWebviewPanel(panel, state) { tabs.attach(panel, state || {}); }
   }));
@@ -417,4 +423,4 @@ function deactivate() {
   activeTabs = undefined;
 }
 
-module.exports = { activate, deactivate, ChatTabs, VIEW_TYPE, COMMAND_ID, workspacePath, hostKey };
+module.exports = { activate, deactivate, ChatTabs, VIEW_TYPE, COMMAND_ID, SDK_COMMAND_ID, workspacePath, hostKey };

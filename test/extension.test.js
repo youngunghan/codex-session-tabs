@@ -98,6 +98,25 @@ test('extension deactivation hard-aborts every active SDK operation synchronousl
   assert.equal(state.operation !== null, true);
 });
 
+test('activation keeps SDK restoration but the primary command routes to the official editor without checking Python', async () => {
+  const { api, extension, context } = fixture();
+  const commands = new Map();
+  api.commands.registerCommand = (id, fn) => { commands.set(id, fn); return { dispose() {} }; };
+  api.extensions = { getExtension: () => undefined };
+  let reported = '';
+  api.window.showErrorMessage = text => { reported = text; };
+  const tabs = extension.activate(context);
+  assert.equal(tabs.readyPromise, undefined);
+  let sdkOpened = 0;
+  tabs.open = () => { sdkOpened++; };
+  await commands.get(extension.COMMAND_ID)();
+  assert.match(reported, /Install the official Codex extension/);
+  assert.equal(sdkOpened, 0);
+  commands.get(extension.SDK_COMMAND_ID)();
+  assert.equal(sdkOpened, 1);
+  extension.deactivate();
+});
+
 test('closing an editor tab immediately hard-aborts its active operation', async () => {
   const { tabs, panel } = fixture();
   let dispose;
