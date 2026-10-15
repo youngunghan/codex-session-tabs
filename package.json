@@ -46,7 +46,10 @@
       {
         "command": "codexSessionTabs.newTab",
         "title": "Codex: New Codex Tab",
-        "icon": "$(sparkle-filled)"
+        "icon": {
+          "light": "icons/codex-light.svg",
+          "dark": "icons/codex-dark.svg"
+        }
       }
     ],
     "menus": {

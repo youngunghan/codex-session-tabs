@@ -45,6 +45,10 @@ class ChatTabs {
   }
 
   attach(panel, saved = {}) {
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this.context.extensionUri, 'icons', 'codex-light.svg'),
+      dark: vscode.Uri.joinPath(this.context.extensionUri, 'icons', 'codex-dark.svg')
+    };
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]

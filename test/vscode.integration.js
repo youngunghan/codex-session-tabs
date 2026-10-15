@@ -21,6 +21,9 @@ async function run() {
   const extension = vscode.extensions.getExtension('youngunghan.yuhan-codex-session-tabs');
   const manager = await extension.activate();
   const [state, secondState] = [...manager.panels];
+  for (const theme of ['light', 'dark']) {
+    assert.ok(fs.existsSync(state.panel.iconPath[theme].fsPath), `${theme} editor icon should be packaged`);
+  }
   manager.setThread(state, '0199ab00-0000-7000-8000-000000000001', 'Before rename');
   manager.setThread(secondState, '0199ab00-0000-7000-8000-000000000002', 'Second thread');
   manager.runtime.ready = true;

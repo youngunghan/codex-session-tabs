@@ -72,6 +72,17 @@ function fixture() {
   return { tabs, state, panel, calls, posted, api, runtime, context, stored };
 }
 
+test('new Codex command and editor tab use packaged light and dark icons', async () => {
+  const { panel } = fixture();
+  const command = require('../package.json').contributes.commands.find(item => item.command === 'codexSessionTabs.newTab');
+  assert.deepEqual(command.icon, { light: 'icons/codex-light.svg', dark: 'icons/codex-dark.svg' });
+  for (const theme of ['light', 'dark']) {
+    const iconFile = path.join(__dirname, '..', command.icon[theme]);
+    assert.equal(panel.iconPath[theme].fsPath, `/extension/${command.icon[theme]}`);
+    assert.match(await fs.readFile(iconFile, 'utf8'), /<svg[^>]+viewBox="0 0 16 16"/);
+  }
+});
+
 test('webview requests reject malformed IDs, dangerous modes, and empty messages', () => {
   assert.ok(!validateMessage({ type: 'select', threadId: '../session' }), 'invalid thread ID must be rejected');
   assert.equal(validateMessage({ type: 'mode', mode: 'full_access' }), undefined);
@@ -216,10 +227,27 @@ test('two open panels keep separate state and New chat opens a third panel', asy
   assert.equal(tabs.owners.get(THREAD_B), second);
 });
 
-test('fresh and restored tabs use read-only mode; restored ID comes from persisted host record', async () => {
-  const { tabs, state, context, runtime, stored, panel } = fixture();
+test('fresh installs start with a provisional read-only tab', () => {
+  const { state } = fixture();
   assert.equal(state.mode, 'read_only');
   assert.equal(state.threadId, null);
+});
+
+test('previous extension state does not grant writes or supply a stale thread', () => {
+  const { tabs, context, runtime, stored, panel } = fixture();
+  stored['codexSessionTabs.aliases'] = { 'codex://old-thread': 'Old title' };
+  stored['codexSessionTabs.recent'] = [{ uri: 'codex://old-thread', title: 'Old title' }];
+  const migrated = new tabs.constructor(context, runtime);
+  const oldUserPanel = { ...panel, title: '', webview: { ...panel.webview } };
+  migrated.attach(oldUserPanel);
+  const state = [...migrated.panels][0];
+  assert.equal(state.mode, 'read_only');
+  assert.equal(state.threadId, null);
+  assert.equal(state.title, 'New Codex chat');
+});
+
+test('restored ID comes from persisted host record while write mode resets', async () => {
+  const { tabs, state, context, runtime, stored, panel } = fixture();
   tabs.setThread(state, THREAD_A, 'Persisted title');
   await state.persistence;
   const restored = new tabs.constructor(context, runtime);
