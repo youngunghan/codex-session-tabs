@@ -92,7 +92,7 @@ class AutoTitles {
   setStatus(kind, reason) {
     this.status = { kind, reason };
     if (this.statusItem) {
-      this.statusItem.text = `Codex titles: ${{ ready: 'Active', following: 'Active', limited: 'Some unavailable', blocked: 'Needs attention', native: 'Native', off: 'Off' }[kind] || kind}`;
+      this.statusItem.text = `Codex titles: ${{ ready: 'Active', following: 'Active', pending: 'Updating', limited: 'Some unavailable', blocked: 'Needs attention', native: 'Native', off: 'Off' }[kind] || kind}`;
       this.statusItem.tooltip = reason;
       if (kind === 'off') this.statusItem.hide?.(); else this.statusItem.show();
     }
@@ -102,6 +102,20 @@ class AutoTitles {
     if (warn && this.lastWarning !== reason) { this.lastWarning = reason; void this.api.window.showWarningMessage?.(reason); }
   }
   invalidate() { this.epoch++; this.operation?.abort?.(); }
+  invalidatedFetch(epoch) {
+    if (this.disposed) return true;
+    if (this.epoch === epoch) return false;
+    const privacy = this.configuration(true);
+    if (this.preference() && privacy.ok) {
+      this.lastSignature = undefined;
+      this.setStatus('pending', 'Label settings changed during discovery. Automatic titles will retry after those changes settle.');
+      this.schedule(); // One debounced event retry, not a heartbeat poll.
+    } else {
+      this.block(privacy.reason || 'Automatic titles were disabled during discovery.');
+      this.queued = true; // Cleanup only; privacy checks precede any fetch.
+    }
+    return true;
+  }
 
   ids() {
     const result = new Set();
@@ -166,6 +180,14 @@ class AutoTitles {
     });
     return this.publications;
   }
+  restorePublication(previous) {
+    this.publications = (this.publications || Promise.resolve()).catch(() => {}).then(async () => {
+      if (this.disposed) return; // Disposal unpublishes after this queue drains.
+      if (previous === null) await this.store.unpublish();
+      else await this.store.atomic(path.join('requests', `${this.store.instance}.json`), previous);
+    });
+    return this.publications;
+  }
 
   async prepare() {
     const support = await this.support();
@@ -204,15 +226,29 @@ class AutoTitles {
 
   async disable(explicit = true) {
     if (this.disposed || this.api.env.remoteName) { this.block('Disable automatic titles in the local IDE profile; remote settings ownership is unverified.'); return; }
+    const priorActive = this.active, priorControl = this.control;
     this.invalidate();
     this.active = true;
     await this.ensureStore(this.source || hash('cleanup-only'));
-    this.control = { kind: 'disable', id: randomUUID() };
+    let priorRequest = null;
+    if (explicit) {
+      try { priorRequest = JSON.parse(await this.store.readText(path.join('requests', `${this.store.instance}.json`))); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (priorRequest && (priorRequest.instance !== this.store.instance || priorRequest.pid !== this.store.pid)) throw new Error('title-prior-request-invalid');
+    }
+    const control = { kind: 'disable', id: randomUUID() };
+    this.control = control;
     await this.publish();
     const recovery = explicit ? { attempted: false } : null;
     this.recovery = recovery;
     try { return await this.enqueue(true); }
-    finally { if (this.recovery === recovery) this.recovery = null; }
+    finally {
+      if (recovery?.refused && this.control?.id === control.id) {
+        this.control = priorControl; this.active = priorActive;
+        await this.restorePublication(priorRequest);
+      }
+      if (this.recovery === recovery) this.recovery = null;
+    }
   }
 
   async refresh() {
@@ -378,12 +414,15 @@ class AutoTitles {
 
   async cycle(force) {
     if (!await this.store.acquire({ recoverPending: async journal => {
-      if (!this.recovery || this.recovery.attempted) return false;
-      this.recovery.attempted = true;
+      const recovery = this.recovery;
+      if (!recovery || recovery.attempted) return false;
+      recovery.attempted = true; recovery.refused = true;
       try {
         if (!await this.boundary.exited(journal.boundary)) return false;
-        const choice = await this.api.window.showWarningMessage?.('A previous IDE settings write has an unknown outcome. Recover only after fully quitting every previous instance of this IDE, including background processes, and relaunching. Reloading or closing one window is insufficient. Confirm all old processes exited; surviving processes could still write settings.', { modal: true }, 'Previous IDE fully exited');
-        return choice === 'Previous IDE fully exited' && await this.boundary.exited(journal.boundary);
+        const choice = await this.api.window.showWarningMessage?.('A previous IDE settings write has an unknown outcome. Save your work, fully quit every previous instance of this IDE including background processes, and relaunch before recovering. Reloading or closing one window is insufficient. Confirm all old processes exited; surviving processes could still write settings. Cancel leaves settings and your previous title request unchanged.', { modal: true }, 'Previous IDE fully exited');
+        const allowed = choice === 'Previous IDE fully exited' && await this.boundary.exited(journal.boundary);
+        recovery.refused = !allowed;
+        return allowed;
       } catch { return false; }
     } })) {
       const state = await this.store.state(true);
@@ -445,7 +484,7 @@ class AutoTitles {
     let reply;
     try { reply = await this.fetchMetadata(ids); }
     catch (error) {
-      if (!this.disposed && this.epoch === epoch) {
+      if (!this.invalidatedFetch(epoch)) {
         if (error.code === 'METADATA_IDENTITY_UNAVAILABLE') await this.cleanup(state, 'The Codex account identity is unavailable or changed. Automatic titles stopped; check the account and enable again.', state.source);
         else {
           state.blocked = 'Title metadata is temporarily unavailable. Existing labels are retained; check SDK/account/CLI and run Refresh Tab Titles to retry.';
@@ -454,11 +493,12 @@ class AutoTitles {
       }
       return;
     }
-    if (this.disposed || this.epoch !== epoch) return;
+    if (this.invalidatedFetch(epoch)) return;
     requests = await this.store.requests();
     if (requests.some(row => row.control?.kind === 'disable' && !handled(state, row))) { this.queued = true; return; }
     state.blocked = '';
-    if (!this.configuration(true).ok || this.epoch !== epoch) { this.queued = true; return; }
+    if (this.invalidatedFetch(epoch)) return;
+    if (!this.configuration(true).ok) { this.queued = true; return; }
     const current = this.configuration(true);
     const patterns = { ...current.patterns };
     const entries = { ...state.entries };

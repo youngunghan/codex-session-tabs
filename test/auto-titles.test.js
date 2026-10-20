@@ -59,6 +59,53 @@ test('manual exclusion removal rejects stale metadata, removes exact owned value
   assert.deepEqual(f.shared.values['settingsSync.ignoredSettings'], []);
 });
 
+for (const [setting, scope] of [['settingsSync.ignoredSettings', 'workspaceValue'], [PATTERNS, 'workspaceFolderValue']]) test(`${scope} override of ${setting} after Enable rejects pending titles and cleans exact ownership`, async t => {
+  const f = await fixture(t); const entered = deferred(), release = deferred(); let calls = 0;
+  const C = '0199ab00-0000-7000-8000-000000000003';
+  const a = f.make('writer', { ids: [A, B], metadata: async request => {
+    calls++;
+    if (calls > 1) { entered.resolve(); await release.promise; }
+    return { identity: ACCOUNT, threads: request.ids.map(id => ({ id, title: calls > 1 ? 'Stale forbidden title' : 'Initial owned title' })) };
+  } });
+  await a.manager.enable();
+  a.tabs.push({ input: new a.api.TabInputCustom({ scheme: 'openai-codex', authority: 'route', path: `/local/${C}` }, 'chatgpt.conversationEditor') });
+  const pending = a.manager.refresh(); await entered.promise;
+  f.shared.edit(PATTERNS, { ...f.shared.values[PATTERNS], [key(B)]: 'User preserved title', '**/src/**': 'User source' });
+  const scopedValue = setting === PATTERNS ? { '**/local/*': 'Scoped user label' } : [];
+  f.shared.overrides[setting] = { [scope]: scopedValue }; f.shared.fire(setting);
+  const writeCount = f.shared.writes.length;
+  release.resolve(); await pending;
+  await a.manager.heartbeat(); await a.manager.refresh();
+  assert.equal(calls, 2, 'scope conflict cannot launch a retry or later metadata');
+  assert.equal(f.shared.values[PATTERNS][key(A)], undefined);
+  assert.equal(f.shared.values[PATTERNS][key(B)], 'User preserved title');
+  assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
+  assert.equal(f.shared.values[PATTERNS][key(C)], undefined);
+  assert.equal(f.shared.writes.slice(writeCount).some(row => row.key === PATTERNS && Object.values(row.value).includes('Stale forbidden title')), false);
+  assert.deepEqual(f.shared.overrides[setting][scope], scopedValue);
+  assert.equal(a.manager.status.kind, 'blocked'); assert.equal((await a.store.state(true)).enabled, false);
+});
+
+test('unrelated user pattern edit invalidates old reply and automatically retries once with accurate status', async t => {
+  const f = await fixture(t); const entered = deferred(), release = deferred(); let calls = 0;
+  const a = f.make('writer', { metadata: async request => {
+    const attempt = ++calls;
+    if (attempt === 1) { entered.resolve(); await release.promise; }
+    return { identity: ACCOUNT, threads: request.ids.map(id => ({ id, title: attempt === 1 ? 'Stale forbidden title' : 'Fresh retried title' })) };
+  } });
+  const enabling = a.manager.enable(); await entered.promise;
+  f.shared.edit(PATTERNS, { '**/src/**': 'User source' });
+  release.resolve(); await enabling;
+  assert.equal(a.manager.status.kind, 'pending');
+  await until(() => calls === 2 && a.manager.status.kind === 'ready');
+  assert.equal(f.shared.values[PATTERNS][key(A)], 'Fresh retried title');
+  assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
+  assert.equal(f.shared.writes.some(row => row.key === PATTERNS && Object.values(row.value).includes('Stale forbidden title')), false);
+  await a.manager.heartbeat(); await new Promise(resolve => setTimeout(resolve, 350));
+  assert.equal(calls, 2, 'completed event retry cannot become an idle heartbeat retry loop');
+  assert.equal(a.manager.status.kind, 'ready');
+});
+
 test('exclusion is rechecked after durable journal await and before any new title write', async t => {
   const f = await fixture(t); const a = f.make('a');
   const save = a.store.save.bind(a.store); let revoked = false;
@@ -165,7 +212,7 @@ test('explicit Disable recovers dead journal only after verified old main exit, 
   const f = await fixture(t); const old = await pendingWriter(f); let checks = 0, dialogs = 0;
   const boundary = createProcessBoundary({ pid: 60002, executable: old.boundary.executable, snapshot: async () => { checks++; return old.snapshot(null); } });
   const b = f.make('new-writer', { boundary, storeOptions: { pid: 60002, alive: old.alive } });
-  b.api.window.showWarningMessage = async (_message, options, button) => { if (options?.modal) { dialogs++; return button; } };
+  b.api.window.showWarningMessage = async (message, options, button) => { if (options?.modal) { dialogs++; assert.match(message, /Save your work/); assert.match(message, /Cancel leaves settings and your previous title request unchanged/); return button; } };
   await b.manager.disable();
   assert.equal(dialogs, 1); assert.ok(checks >= 3, 'two exit checks and own new cleanup boundary');
   const state = await b.store.state(true);
@@ -197,6 +244,26 @@ for (const failure of ['automatic', 'cancel', 'old-main-alive', 'same-main', 'am
   assert.equal(JSON.stringify(f.shared.values), before); assert.equal(f.shared.writes.length, writes);
   assert.equal((await b.store.state(true)).journal.token, old.token); assert.equal(b.store.owned, null);
   assert.equal(dialogs, ['cancel', 'changed-during-dialog'].includes(failure) ? 1 : 0);
+  if (failure === 'cancel') await assert.rejects(b.store.readText(require('node:path').join('requests', `${b.store.instance}.json`)), { code: 'ENOENT' });
+});
+
+test('canceled recovery restores the prior request and cannot queue a later disable for an eligible writer', async t => {
+  const f = await fixture(t); const old = await pendingWriter(f);
+  const boundary = createProcessBoundary({ pid: 60002, executable: old.boundary.executable, snapshot: async () => old.snapshot(null) });
+  const b = f.make('canceling-window', { boundary, storeOptions: { pid: 60002, alive: old.alive } });
+  await b.manager.enable(); // Preserve a real prior Enable request/control.
+  const requestFile = require('node:path').join('requests', `${b.store.instance}.json`);
+  const prior = JSON.parse(await b.store.readText(requestFile));
+  b.api.window.showWarningMessage = async () => undefined;
+  await b.manager.disable();
+  assert.deepEqual(JSON.parse(await b.store.readText(requestFile)), prior);
+  assert.deepEqual(b.manager.control, prior.control);
+  const state = await old.a.store.state(true); state.journal.settled = true; await old.a.store.save(state);
+  old.life.set(60003, true);
+  const c = f.make('eligible-writer', { storeOptions: { pid: 60003, alive: old.alive } });
+  await c.manager.refresh(); await c.manager.heartbeat();
+  assert.equal((await c.store.state(true)).enabled, true); assert.equal(c.manager.preference(), true);
+  assert.equal((await c.store.requests()).some(row => row.instance === b.store.instance && row.control?.kind === 'disable'), false);
 });
 
 test('idle heartbeat past 30 seconds and zero-tab refresh never launch a helper', async t => {

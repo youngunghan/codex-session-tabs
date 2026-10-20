@@ -36,15 +36,18 @@ async function fixture(t) {
       version: '1.128.0', TabInputCustom, ConfigurationTarget: { Global: 1 }, env: { appName: 'Cursor', remoteName: undefined },
       workspace: {
         workspaceFolders: [{ uri: { toString: () => `file:///synthetic/${name}` } }],
-        getConfiguration(section) {
+        getConfiguration(section, scope) {
           const snapshot = { ...copy(defaults), ...copy(values) };
           for (const [key, override] of Object.entries(overrides)) if ('workspaceValue' in override) snapshot[key] = copy(override.workspaceValue);
+          for (const [key, override] of Object.entries(overrides)) if (scope && 'workspaceFolderValue' in override) snapshot[key] = copy(override.workspaceFolderValue);
           return {
             get(key, fallback) { const full = `${section}.${key}`; return full in snapshot ? copy(snapshot[full]) : fallback; },
             inspect(key) {
               const full = `${section}.${key}`;
               if (!(full in defaults) || overrides[full]?.unregistered) return undefined;
-              return { key: full, defaultValue: copy(defaults[full]), globalValue: copy(values[full]), ...copy(overrides[full] || {}) };
+              const override = copy(overrides[full] || {});
+              if (!scope) delete override.workspaceFolderValue;
+              return { key: full, defaultValue: copy(defaults[full]), globalValue: copy(values[full]), ...override };
             },
             async update(key, value) {
               const full = `${section}.${key}`;
