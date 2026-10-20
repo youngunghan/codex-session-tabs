@@ -122,12 +122,12 @@ class SdkRuntime {
   }
 
   run(request, onEvent) {
-    if (!this.ready) throw new Error('Set up the Codex SDK first.');
+    if (!this.ready && request.op !== 'metadata') throw new Error('Set up the Codex SDK first.');
     const requestId = randomUUID();
     const child = this.spawnProcess(this.python, ['-u', this.helper], {
       cwd: request.cwd || this.context.extensionPath, windowsHide: true,
       detached: process.platform !== 'win32',
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
     });
     const decoder = new StringDecoder('utf8');
     let stdout = '';
@@ -162,21 +162,23 @@ class SdkRuntime {
           try {
             event = JSON.parse(line);
           } catch (error) {
-            eventError = new Error(`Invalid Codex SDK response: ${error.message}`);
+            eventError = new Error(request.op === 'metadata' ? 'Invalid automatic-title metadata response.' : `Invalid Codex SDK response: ${error.message}`);
             hardAbort();
             return;
           }
           try {
             if (event.requestId !== requestId) throw new Error('Mismatched Codex SDK request ID');
             if (event.kind === 'turn') turnSeen = true;
-            if (['list', 'loaded', 'renamed', 'completed', 'error'].includes(event.kind)) {
+            if (['list', 'loaded', 'renamed', 'completed', 'metadata', 'error'].includes(event.kind)) {
+              const expected = { list: 'list', load: 'loaded', rename: 'renamed', send: 'completed', metadata: 'metadata' }[request.op];
+              if (event.kind !== 'error' && expected && event.kind !== expected) throw new Error('Unexpected Codex SDK terminal event');
               terminalCount++;
               clearTimeout(stopTimer);
               stopTimer = undefined;
             }
             if (terminalCount > 1) throw new Error('Multiple Codex SDK terminal events');
-            if (event.kind === 'error') eventError = new Error(event.message);
-            onEvent(event);
+            if (event.kind === 'error') eventError = new Error(request.op === 'metadata' ? 'Automatic-title metadata unavailable.' : event.message);
+            onEvent(request.op === 'metadata' && event.kind === 'error' ? { requestId, kind: 'error', code: 'METADATA_UNAVAILABLE', message: 'Automatic-title metadata unavailable.' } : event);
           } catch (error) {
             eventError = error;
             hardAbort();
@@ -192,13 +194,13 @@ class SdkRuntime {
         clearTimeout(stopTimer);
         stdout += decoder.end();
         if (stdout.trim() && !eventError) eventError = new Error('Codex SDK ended with an incomplete response.');
-        if (eventError || code !== 0 || terminalCount !== 1) {
+        if (request.op !== 'metadata' && (eventError || code !== 0 || terminalCount !== 1)) {
           try { abortTreeOnce(); } catch { /* Keep the original SDK error. */ }
         }
         if (eventError) reject(eventError);
         else if (code === 0 && terminalCount === 1) resolve();
         else if (code === 0) reject(new Error('Codex SDK ended without exactly one terminal event.'));
-        else reject(new Error(stderr || `Codex SDK exited ${code}`));
+        else reject(new Error(request.op === 'metadata' ? 'Automatic-title metadata helper failed.' : stderr || `Codex SDK exited ${code}`));
       });
       child.stdin.on('error', error => {
         if (terminalCount > 0 && error.code === 'EPIPE') return;
@@ -208,7 +210,7 @@ class SdkRuntime {
     });
     child.stdin.write(`${JSON.stringify({ ...request, requestId })}\n`);
     return {
-      promise,
+      promise: request.op === 'metadata' ? promise.catch(() => { throw new Error('Automatic-title metadata unavailable. Check SDK setup, account, and official CLI compatibility.'); }) : promise,
       stop() {
         if (closed || terminalCount > 0) return;
         if (!turnSeen) { hardAbort(); return; }

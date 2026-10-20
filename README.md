@@ -22,6 +22,26 @@ This handling runs after the editor-tab event arrives. If the IDE replaces a pre
 
 Previous reports of some existing Codex tabs accepting text but hanging after send, and failing to open file links, remain unresolved. The root cause is unknown, and returning to the official editor route is not evidence that the prior issue has been fixed.
 
+## Automatic official tab titles (optional)
+
+Automatic titles are off by default. Enable or disable them with **Codex: Enable Automatic Tab Titles** and **Codex: Disable Automatic Tab Titles**. If the SDK is missing, Enable offers an explicit **Set up Codex SDK** button; activation never installs it. **Codex: Refresh Tab Titles** refreshes titles for open saved tabs. The `codexSessionTabs.autoTitles.enabled` setting is machine-scoped.
+
+When enabled, this feature uses the private pinned SDK after setup has been invoked by the user. It reads public account information and saved-thread metadata only; it does not make a model turn, rename a thread, or resume a thread to fetch a title. On Cursor 3.25.9 with extension API 1.128, actual saved-conversation tab labels changed from UUIDs to SDK names even while the tabs were inactive, so titles use the global `workbench.editor.customLabels.patterns` setting. VS Code 1.142 already returned the saved name through its native provider, so the extension does not add an unnecessary override there.
+
+Automatic labels are enabled only for the fingerprinted local Windows builds. Unknown builds and Remote SSH writes stay disabled pending verification. Existing official tabs keep working unchanged. Missing or unknown metadata leaves the native label in place.
+
+Enabling automatic labels excludes the entire `workbench.editor.customLabels.patterns` setting from Settings Sync, including existing file labels. That exclusion remains after automatic titles are disabled. Before every write, the extension rechecks ownership and the sync exclusion. If the exclusion is removed, it stops and cleans up only unchanged values it owns; user-edited values are preserved. The public API cannot atomically compare-and-set against external manual edits or third-party sync tools.
+
+The extension's local ownership cache stores thread IDs, labels, and login HMAC context, not messages, drafts, email addresses, or credentials. A login email hash is not organization authentication. Current Cursor source shows its bundled VS Code Settings Sync store disabled; this is source evidence, not a guarantee about account-level cloud transfer.
+
+Existing overlapping user patterns and disabled custom labels are respected. Discovery and the local cache are bounded, so some tabs may retain native labels. If a previous settings write has an unknown outcome, automatic writes stop for manual inspection rather than claiming cleanup succeeded. See the [implementation and test limits](test/compat/AUTOMATIC-TITLES.md) for details.
+
+The default opener UI is unchanged. Automatic titles do not repair the previously reported send hangs, failed file links, or other official-tab issues, and do not close or reopen tabs. Evidence covers the current local Windows builds only. It makes no all-OS, future-version, or upgrade-reliability claim. Cursor's native GUI behavior was not observed; the actual host API was tested. The native VS Code label was visible.
+
+### Upgrade from 0.6.2
+
+Automatic official tab titles remain off by default after upgrading. The behavior and limits above apply; unknown builds and Remote SSH writes remain disabled pending verification.
+
 ## Optional SDK chats
 
 The **Codex: New SDK Chat Tab** command opens this extension's own chat panel and uses the official [`openai-codex` Python SDK](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md) with its matching Codex runtime. It is separate from the official conversation editor and remains available when explicitly requested.

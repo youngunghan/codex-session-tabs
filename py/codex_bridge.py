@@ -12,6 +12,9 @@ import signal
 import subprocess
 import sys
 import threading
+import hashlib
+import hmac
+import re
 from typing import Any
 
 from openai_codex import ApprovalMode, AsyncCodex, Sandbox
@@ -273,8 +276,55 @@ async def send(codex: AsyncCodex, request: dict[str, Any]) -> None:
         done.set()
 
 
+async def metadata(request: dict[str, Any]) -> None:
+    """Public metadata only. No resume/start/read-turns/rename/model operations."""
+    from openai_codex import CodexConfig
+    from openai_codex import __version__ as sdk_version
+    ids = request.get("ids")
+    salt = request.get("salt")
+    binary, home = request.get("codexBin"), request.get("codexHome")
+    canonical = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
+    if sdk_version != "0.162.1" or not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(value, str) or not canonical.fullmatch(value) for value in ids):
+        raise ValueError("Invalid metadata request")
+    if not isinstance(salt, str) or not re.fullmatch(r"[0-9a-f]{64}", salt) or not isinstance(binary, str) or not os.path.isabs(binary) or not isinstance(home, str) or not os.path.isabs(home):
+        raise ValueError("Invalid metadata context")
+    def identity(response: Any) -> str:
+        account = response.account.root if response.account else None
+        email = getattr(account, "email", None)
+        if getattr(account, "type", None) != "chatgpt" or not isinstance(email, str) or not email.strip():
+            raise ValueError("Missing supported account identity")
+        return hmac.new(bytes.fromhex(salt), ("chatgpt\0" + email.strip().casefold()).encode(), hashlib.sha256).hexdigest()
+    env = dict(os.environ)
+    env["CODEX_HOME"] = home
+    wanted = {value.lower() for value in ids}
+    found = {}
+    cursor = None
+    async with AsyncCodex(CodexConfig(codex_bin=binary, env=env)) as codex:
+        first = identity(await codex.account(refresh_token=False))
+        for _ in range(3):
+            page = await codex.thread_list(limit=50, cursor=cursor)
+            for row in page.data:
+                if row.id.lower() not in wanted:
+                    continue
+                title = row.name
+                if not title:
+                    lines = (row.preview or "").splitlines()
+                    title = lines[0] if lines else ""
+                if isinstance(title, str) and title.strip():
+                    found[row.id.lower()] = title[:200]
+            cursor = page.next_cursor
+            if not cursor or wanted.issubset(found):
+                break
+        if identity(await codex.account(refresh_token=False)) != first:
+            raise ValueError("Account changed during metadata request")
+    emit("metadata", identity=first, threads=[{"id": key, "title": value} for key, value in found.items()], discoveryComplete=not bool(cursor), sdkVersion=sdk_version)
+
+
 async def run(request: dict[str, Any]) -> None:
     op = request.get("op")
+    if op == "metadata":
+        await metadata(request)
+        return
     async with AsyncCodex() as codex:
         if op == "list":
             page = await codex.thread_list(limit=50, cursor=request.get("cursor"))
@@ -297,6 +347,7 @@ async def run(request: dict[str, Any]) -> None:
 async def main() -> None:
     global REQUEST_ID, INPUT_WATCHER
     watcher = None
+    request = {}
     try:
         line = await asyncio.to_thread(sys.stdin.readline)
         if not line:
@@ -309,6 +360,9 @@ async def main() -> None:
         INPUT_WATCHER = watcher
         await run(request)
     except Exception as error:
+        if request.get("op") == "metadata":
+            emit("error", code="METADATA_UNAVAILABLE", message="Automatic title metadata unavailable. Check SDK setup, supported account, and official CLI compatibility.")
+            sys.exit(1)
         message = str(error) or type(error).__name__
         lower = message.lower()
         code = "BUSY" if any(word in lower for word in ("already in use", "locked", "busy", "active owner")) else "ERROR"

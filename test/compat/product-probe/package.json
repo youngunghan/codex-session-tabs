@@ -1,0 +1,14 @@
+{
+  "name": "codex-automatic-titles-probe",
+  "publisher": "isolated-test",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.100.0" },
+  "main": "extension.js",
+  "activationEvents": ["*"],
+  "contributes": {
+    "configuration": {
+      "properties": { "codexSessionTabs.autoTitles.enabled": { "type": "boolean", "default": false, "scope": "machine" } }
+    },
+    "customEditors": [{ "viewType": "chatgpt.conversationEditor", "displayName": "FAKE provider for isolated title test", "selector": [{ "filenamePattern": "*" }], "priority": "option" }]
+  }
+}

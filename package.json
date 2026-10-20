@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
   "description": "Open multiple editor tabs with the original official Codex interface.",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "publisher": "youngunghan",
   "repository": {
     "type": "git",
@@ -35,6 +35,12 @@
     "configuration": {
       "title": "Codex Session Tabs",
       "properties": {
+        "codexSessionTabs.autoTitles.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Enable bounded automatic titles for verified local Cursor builds. Use Codex: Enable Automatic Tab Titles to initialize the whole-patterns Settings Sync exclusion and SDK setup. Official/native titles remain independent."
+        },
         "codexSessionTabs.pythonPath": {
           "type": "string",
           "default": "",
@@ -44,6 +50,9 @@
       }
     },
     "commands": [
+      { "command": "codexSessionTabs.enableAutoTitles", "title": "Codex: Enable Automatic Tab Titles" },
+      { "command": "codexSessionTabs.disableAutoTitles", "title": "Codex: Disable Automatic Tab Titles" },
+      { "command": "codexSessionTabs.refreshAutoTitles", "title": "Codex: Refresh Tab Titles" },
       {
         "command": "codexSessionTabs.newTab",
         "title": "Codex: New Codex Tab",

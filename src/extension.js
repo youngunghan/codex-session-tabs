@@ -6,11 +6,13 @@ const { SdkRuntime } = require('./runtime');
 const { validateMessage, validThreadId } = require('./protocol');
 const { html } = require('./webview');
 const { openOfficialTab, retainOfficialHistoryTabs } = require('./official-editor');
+const { AutoTitles, COMMANDS: TITLE_COMMANDS } = require('./auto-titles');
 
 const VIEW_TYPE = 'codexSessionTabs.chat';
 const COMMAND_ID = 'codexSessionTabs.newTab';
 const SDK_COMMAND_ID = 'codexSessionTabs.newSdkTab';
 let activeTabs;
+let activeTitles;
 
 function workspacePath() {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || undefined;
@@ -407,6 +409,13 @@ function activate(context) {
   const runtime = new SdkRuntime(context, vscode);
   const tabs = new ChatTabs(context, runtime);
   activeTabs = tabs;
+  const titles = new AutoTitles(context, vscode, runtime).start();
+  activeTitles = titles;
+  tabs.autoTitles = titles;
+  context.subscriptions.push(titles);
+  for (const [action, command] of Object.entries(TITLE_COMMANDS)) context.subscriptions.push(vscode.commands.registerCommand(command, () => titles[action]().catch(() => {
+    titles.block('Automatic titles could not complete. Check SDK setup and local title storage; official tabs remain available.', true);
+  })));
   context.subscriptions.push(retainOfficialHistoryTabs(vscode));
   context.subscriptions.push(vscode.commands.registerCommand(COMMAND_ID, async () => {
     try { return await openOfficialTab(vscode); }
@@ -422,6 +431,9 @@ function activate(context) {
 function deactivate() {
   activeTabs?.shutdown();
   activeTabs = undefined;
+  const titles = activeTitles;
+  activeTitles = undefined;
+  return titles?.dispose();
 }
 
 module.exports = { activate, deactivate, ChatTabs, VIEW_TYPE, COMMAND_ID, SDK_COMMAND_ID, workspacePath, hostKey };
