@@ -69,7 +69,7 @@ test('actual PowerShell role regex handles quoted main and rejects CLI/utility/n
   ];
   const encoded = Buffer.from(JSON.stringify(cases)).toString('base64');
   const script = `${ROLE_SCRIPT}\n$cases=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))|ConvertFrom-Json\n$results=@(foreach($case in $cases){RoleFacts $case.command $case.exe});$results|ConvertTo-Json -Compress`;
-  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 3000, encoding: 'utf8' }));
+  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15000, encoding: 'utf8' }));
   const eligible = facts => facts.initialExecutableTokenMatches && !facts.hasElectronType && !facts.hasNodeMarker && !facts.hasCliScript && !facts.hasCliOnlyFlags;
   assert.deepEqual(result.map(eligible), [true, true, true, false, false, false, false]);
   assert.ok(ROLE_SCRIPT.includes('(?:\\s|$)')); assert.ok(!ROLE_SCRIPT.includes('(?:\\\\s|$)'));

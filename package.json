@@ -2,7 +2,7 @@
   "name": "yuhan-codex-session-tabs",
   "displayName": "Codex Session Tabs",
   "description": "Open multiple editor tabs with the original official Codex interface.",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "publisher": "youngunghan",
   "repository": {
     "type": "git",

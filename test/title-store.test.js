@@ -7,6 +7,19 @@ const { randomUUID } = require('node:crypto');
 const { TitleStore, MAX_ENTRIES } = require('../src/title-store');
 const { fixture, SOURCE, ACCOUNT, A, B, deferred } = require('./title-fixtures');
 
+async function assertRetiredOwnerCannotRelease(retired, replacement) {
+  await replacement.assertOwner();
+  const ownerFile = path.join(replacement.lock, replacement.ownerName);
+  const before = await fs.readFile(ownerFile, 'utf8');
+  await assert.rejects(retired.release(), error => error instanceof Error && (
+    error.message === 'title-writer-ownership-lost' || error.message === 'title-writer-token-mismatch' ||
+    (error.code === 'ENOENT' && error.syscall === 'lstat' && error.path === path.join(retired.lock, retired.ownerName))
+  ));
+  await replacement.assertOwner();
+  assert.deepEqual(await fs.readdir(replacement.lock), [replacement.ownerName]);
+  assert.equal(await fs.readFile(ownerFile, 'utf8'), before);
+}
+
 test('racing atomic acquisitions produce at most one writer and followers cannot save', async t => {
   const f = await fixture(t); const root = path.join(f.root, 'store');
   const a = new TitleStore(root), b = new TitleStore(root); await a.init(); await b.init();
@@ -23,7 +36,7 @@ test('positively dead writer without journal can be replaced; old token cannot r
   const a = new TitleStore(root, { pid: 60001, alive: () => alive }); await a.init(); await a.acquire();
   const b = new TitleStore(root, { pid: 60002, alive: () => false }); await b.init(); alive = false;
   assert.equal(await b.acquire(), true);
-  await assert.rejects(a.release(), /ownership|token/); await b.release();
+  await assertRetiredOwnerCannotRelease(a, b); await b.release();
 });
 
 test('concurrent dead-writer reclaim holds one claim from old snapshot through replacement', async t => {
@@ -41,7 +54,7 @@ test('concurrent dead-writer reclaim holds one claim from old snapshot through r
   await assert.rejects(fs.stat(path.join(root, 'reclaim.claim')), { code: 'ENOENT' });
   assert.equal(await other.acquire(), false);
   const value = await slow.state(true); value.generation++; await slow.save(value);
-  await assert.rejects(dead.release(), /ownership|token/);
+  await assertRetiredOwnerCannotRelease(dead, slow);
   await slow.release(); assert.equal(await other.acquire(), true); await other.release();
 });
 
@@ -172,7 +185,7 @@ test('a durably settled journal permits dead-writer takeover but stays journaled
   const state = await a.state(true); state.journal = { token: randomUUID(), generation: 0, intended: {}, settled: true }; await a.save(state);
   const b = new TitleStore(root, { pid: 60002, alive: () => false }); await b.init();
   assert.equal(await b.acquire(), true); assert.equal((await b.state(true)).journal.settled, true);
-  await assert.rejects(a.release(), /ownership|token/);
+  await assertRetiredOwnerCannotRelease(a, b);
   await assert.rejects(b.release(), /pending-write/);
   const reconciled = await b.state(true); reconciled.journal = null; await b.save(reconciled); await b.release();
 });

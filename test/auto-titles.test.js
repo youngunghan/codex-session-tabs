@@ -2,10 +2,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const path = require('node:path');
 const { fixture, A, B, ACCOUNT, deferred, until } = require('./title-fixtures');
 const { literalTitle, mayMatch, PATTERNS } = require('../src/auto-titles');
 const { createProcessBoundary } = require('../src/title-process-boundary');
 const key = id => `**/local/${id}`;
+
+async function assertRetiredOwnerCannotRelease(retired, replacement) {
+  await replacement.assertOwner();
+  const ownerFile = path.join(replacement.lock, replacement.ownerName);
+  const before = await fs.readFile(ownerFile, 'utf8');
+  await assert.rejects(retired.release(), error => error instanceof Error && (
+    error.message === 'title-writer-ownership-lost' || error.message === 'title-writer-token-mismatch' ||
+    (error.code === 'ENOENT' && error.syscall === 'lstat' && error.path === path.join(retired.lock, retired.ownerName))
+  ));
+  await replacement.assertOwner();
+  assert.deepEqual(await fs.readdir(replacement.lock), [replacement.ownerName]);
+  assert.equal(await fs.readFile(ownerFile, 'utf8'), before);
+}
 
 async function pendingWriter(f) {
   const life = new Map([[60001, true], [60002, true]]);
@@ -311,7 +325,7 @@ test('explicit Disable recovers dead journal only after verified old main exit, 
   assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
   assert.ok(f.shared.values['settingsSync.ignoredSettings'].includes(PATTERNS));
   assert.equal(b.manager.preference(), false); assert.equal(b.manager.status.kind, 'off');
-  await assert.rejects(old.a.store.release(), /ownership|token/);
+  await assertRetiredOwnerCannotRelease(old.a.store, b.store);
 });
 
 for (const failure of ['automatic', 'cancel', 'old-main-alive', 'same-main', 'ambiguous', 'changed-during-dialog', 'writer-alive', 'writer-unknown']) test(`dead-journal recovery refuses ${failure} without changing user settings`, async t => {
