@@ -38,11 +38,15 @@ Existing overlapping user patterns and disabled custom labels are respected. Dis
 
 Rejected settings writes reconcile exact owned values after the write promise settles. Fix any settings-file error and run Disable again if cleanup failed. After a crash with an unresolved write, fully quit the previous IDE and all its background processes, relaunch, then run Disable. Recovery is offered only when the recorded owning IDE main is verified exited; it also requires your confirmation that all old processes exited. Reloading or closing one window is insufficient. Unknown process layouts remain blocked. See the [implementation and test limits](test/compat/AUTOMATIC-TITLES.md) for details.
 
+A crash during ownership acquisition can leave a claim file that blocks new writers. The blocked status tooltip identifies its exact path. If it persists, save your work and fully quit every window and background process of that IDE before removing **only that `reclaim.claim` file**, then relaunch. Never remove it while a previous IDE process may still be running. Preserve `writer.lock`, `state.json`, request files and the salt. The extension never deletes an abandoned claim automatically; unresolved settings writes still require the separate Disable recovery above.
+
 The default opener UI is unchanged. Automatic titles do not repair the previously reported send hangs, failed file links, or other official-tab issues, and do not close or reopen tabs. Evidence covers the current local Windows builds only. It makes no all-OS, future-version, or upgrade-reliability claim. Cursor's native GUI behavior was not observed; the actual host API was tested. The native VS Code label was visible.
 
 ### Upgrade from 0.6.2
 
 Automatic official tab titles remain off by default after upgrading. The behavior and limits above apply; unknown builds and Remote SSH writes remain disabled pending verification.
+
+This is the first release of the automatic-title ownership protocol, supported from 0.6.2 or a clean profile. Earlier experimental 0.6.3 controllers must not share its profile storage while running; migration from those unreleased development builds is unsupported.
 
 ## Optional SDK chats
 

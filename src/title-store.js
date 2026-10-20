@@ -95,8 +95,53 @@ class TitleStore {
 
   async save(state) { await this.assertOwner(); await this.atomic('state.json', state); }
 
+  async withReclaimClaim(action) {
+    const root = await fs.lstat(this.root);
+    if (!same(this.identity, root) || !root.isDirectory() || root.isSymbolicLink()) throw new Error('title-store-root-replaced');
+    const claim = path.join(this.root, 'reclaim.claim');
+    const token = randomUUID();
+    let handle;
+    try { handle = await fs.open(claim, 'wx', 0o600); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const blocked = new Error('title-acquisition-claim-blocked');
+      blocked.code = 'TITLE_ACQUISITION_CLAIM_BLOCKED';
+      throw blocked;
+    }
+    let identity, written = false;
+    try {
+      identity = await handle.stat(); // Identity of our wx-created file, not a pathname observed later.
+      await handle.writeFile(token);
+      written = true;
+      await handle.close(); handle = null;
+      return await action();
+    } finally {
+      if (handle) {
+        try { identity ||= await handle.stat(); } // May recover a transient initial fstat failure.
+        finally { await handle.close(); }
+      }
+      if (!identity) throw new Error('title-claim-identity-unproven');
+      const currentRoot = await fs.lstat(this.root);
+      const current = await fs.lstat(claim);
+      if (!same(this.identity, currentRoot) || currentRoot.isSymbolicLink() || !currentRoot.isDirectory() || !same(identity, current) || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || current.size > token.length) throw new Error('title-claim-ownership-lost');
+      const contents = await fs.readFile(claim, 'utf8');
+      // A failed write may have left our captured file empty or partially
+      // written. Never accept unrelated contents or a substituted file.
+      if (written ? contents !== token : !token.startsWith(contents)) throw new Error('title-claim-token-changed');
+      const latestRoot = await fs.lstat(this.root), latest = await fs.lstat(claim);
+      if (!same(this.identity, latestRoot) || latestRoot.isSymbolicLink() || !latestRoot.isDirectory() || !same(identity, latest) || !latest.isFile() || latest.isSymbolicLink() || latest.nlink !== 1 || latest.size !== current.size || latest.mtimeMs !== current.mtimeMs) throw new Error('title-claim-ownership-changed');
+      await fs.unlink(claim);
+    }
+  }
+
   async acquire(options = {}) {
     if (this.owned) { await this.assertOwner(); return true; }
+    return this.withReclaimClaim(() => this.acquireClaimed(options));
+  }
+
+  // Every fresh creator and reclaimer enters through the same outer claim.
+  // Recursion stays inside it, so no other fresh creator can win the gap.
+  async acquireClaimed(options = {}) {
     try { await fs.mkdir(this.lock); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -114,20 +159,14 @@ class TitleStore {
       if (unresolved && (!options.recoverPending || !await options.recoverPending(journal))) {
         const error = new Error('title-dead-writer-pending-write; full IDE restart recovery required'); error.code = 'TITLE_DEAD_PENDING'; throw error;
       }
-      // A unique claim inside the old directory serializes cooperative reclaim.
-      // A crashed reclaimer leaves an ambiguous lock, which is never age-stolen.
-      const claim = path.join(this.lock, 'reclaim.claim');
-      try { await fs.writeFile(claim, this.token, { flag: 'wx', mode: 0o600 }); }
-      catch (claimed) { if (claimed.code === 'EEXIST') return false; throw claimed; }
       const latest = await fs.lstat(this.lock);
       if (!same(stat, latest) || latest.isSymbolicLink()) throw new Error('title-lock-replaced-during-reclaim');
       const latestOwner = JSON.parse(await this.readText(path.join('writer.lock', files[0])));
       const pending = (await this.state(true)).journal;
       if (latestOwner.token !== owner.token || latestOwner.pid !== owner.pid || this.alive(owner.pid) !== false || (unresolved ? pending?.token !== journal.token : pending && pending.settled !== true)) throw new Error('title-reclaim-no-longer-safe');
       await fs.unlink(path.join(this.lock, files[0]));
-      await fs.unlink(claim);
       await fs.rmdir(this.lock);
-      const acquired = await this.acquire();
+      const acquired = await this.acquireClaimed(options);
       if (acquired && unresolved) this.recoveredJournal = journal.token;
       return acquired;
     }

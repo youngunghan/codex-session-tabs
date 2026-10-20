@@ -31,6 +31,28 @@ test('default-off start performs no setup, metadata, coordination or settings wr
   await assert.rejects(fs.stat(a.store.root), { code: 'ENOENT' });
 });
 
+test('abandoned claim with no writer distinctly blocks and gives exact full-stop manual remediation', async t => {
+  const f = await fixture(t); const a = f.make('blocked'); await a.manager.restoration; await a.store.init();
+  const path = require('node:path'), claim = path.join(a.store.root, 'reclaim.claim');
+  await fs.writeFile(claim, 'abandoned-foreign-claim');
+  const writes = f.shared.writes.length; await a.manager.enable(); await a.manager.heartbeat();
+  assert.equal(a.manager.status.kind, 'blocked'); assert.ok(a.manager.status.reason.includes(claim));
+  assert.match(a.manager.status.reason, /save all work and fully quit every window and background process/);
+  assert.match(a.manager.status.reason, /remove ONLY/); assert.match(a.manager.status.reason, /Preserve writer.lock, state.json, requests and salt/);
+  assert.match(a.manager.status.reason, /Never remove the claim while any previous IDE process/);
+  assert.equal(a.calls.length, 0); assert.equal(f.shared.writes.length, writes);
+  await assert.rejects(fs.stat(a.store.lock), { code: 'ENOENT' });
+  await a.manager.dispose(); assert.equal(await fs.readFile(claim, 'utf8'), 'abandoned-foreign-claim');
+  // Emulate the documented full-stop operator step ONLY in our owned fixture.
+  const root = await fs.lstat(a.store.root), file = await fs.lstat(claim);
+  assert.equal(root.dev, a.store.identity.dev); assert.equal(root.ino, a.store.identity.ino); assert.equal(root.isSymbolicLink(), false);
+  assert.equal(path.dirname(claim), a.store.root); assert.ok(!path.relative(f.root, claim).startsWith('..'));
+  assert.ok(file.isFile() && !file.isSymbolicLink() && file.nlink === 1);
+  await fs.unlink(claim);
+  const b = f.make('after-full-stop'); await b.manager.enable();
+  assert.equal(b.manager.status.kind, 'ready'); assert.equal(b.calls.length, 1);
+});
+
 for (const eligibility of ['new-official-version', 'new-codex-home', 'unknown-build', 'native', 'missing-runtime']) for (const override of [false, true]) test(`restart privacy cleanup ignores ${eligibility} eligibility with ${override ? 'folder override' : 'removed exclusion'}`, async t => {
   const f = await fixture(t); const a = f.make('old', { ids: [A, B] }); await a.manager.enable();
   await a.manager.dispose();

@@ -322,7 +322,10 @@ class AutoTitles {
         this.queued = false;
         const requested = this.force; this.force = false;
         try { await this.cycle(requested); }
-        catch (error) { this.block(error.code === 'TITLE_DEAD_PENDING' ? 'A previous IDE settings write is unresolved. Fully quit the previous IDE and its background processes, relaunch, then run Disable Automatic Tab Titles for recovery.' : 'Automatic titles are blocked by ambiguous local ownership or a settings write. Check user settings and retry Disable Automatic Tab Titles.', true); }
+        catch (error) {
+          if (error.code === 'TITLE_ACQUISITION_CLAIM_BLOCKED') this.block(`Another title acquisition is in progress or was interrupted. If this persists, save all work and fully quit every window and background process of this IDE. Then remove ONLY ${path.join(this.store.root, 'reclaim.claim')} and relaunch. Preserve writer.lock, state.json, requests and salt. Never remove the claim while any previous IDE process may still be running. Unresolved settings writes still require the separate Disable recovery.`);
+          else this.block(error.code === 'TITLE_DEAD_PENDING' ? 'A previous IDE settings write is unresolved. Fully quit the previous IDE and its background processes, relaunch, then run Disable Automatic Tab Titles for recovery.' : 'Automatic titles are blocked by ambiguous local ownership or a settings write. Check user settings and retry Disable Automatic Tab Titles.', true);
+        }
       }
     })().finally(() => { this.running = null; });
     return this.running;
