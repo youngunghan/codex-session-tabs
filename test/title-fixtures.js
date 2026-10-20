@@ -33,7 +33,7 @@ async function fixture(t) {
     const tabs = (options.ids || [A]).map(id => ({ input: new TabInputCustom({ scheme: 'openai-codex', authority: 'route', path: `/local/${id}` }, 'chatgpt.conversationEditor'), label: id }));
     const warnings = [];
     const api = {
-      version: '1.128.0', TabInputCustom, ConfigurationTarget: { Global: 1 }, env: { appName: 'Cursor', remoteName: undefined },
+      version: '1.128.0', TabInputCustom, ConfigurationTarget: { Global: 1 }, env: { appName: 'Cursor', remoteName: options.remoteName },
       workspace: {
         workspaceFolders: [{ uri: { toString: () => `file:///synthetic/${name}` } }],
         getConfiguration(section, scope) {
@@ -73,6 +73,7 @@ async function fixture(t) {
     const store = new TitleStore(path.join(root, 'auto-titles-v1'), options.storeOptions);
     const boundary = options.boundary || { capture: async () => ({ pid: 50001, ticks: '639281000000000000', executable: 'c:\\synthetic\\cursor.exe' }), exited: async () => false };
     const manager = new AutoTitles(context, api, { python: '/not-installed', run() { throw new Error('must not use live SDK'); } }, { metadata, support, store, boundary, timeout: options.timeout });
+    if (options.missingRuntime) { delete manager.options.metadata; manager.runtime.python = path.join(root, 'absent-python.exe'); }
     if (options.start !== false) manager.start();
     managers.push(manager);
     return { manager, api, context, store, tabs, calls, warnings };

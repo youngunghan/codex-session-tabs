@@ -85,7 +85,33 @@ class AutoTitles {
     }));
     if (this.api.workspace.onDidChangeWorkspaceFolders) subscriptions.push(this.api.workspace.onDidChangeWorkspaceFolders(() => { this.invalidate(); if (this.active) this.schedule(); }));
     if (this.preference()) { this.active = true; this.schedule(true); }
+    else this.restoration = this.restoreExistingOwnership().catch(() => this.block('Existing automatic-title ownership could not be inspected safely. Check local title storage before cleanup.', true));
     return this;
+  }
+
+  async existingState() {
+    try {
+      const root = await fs.lstat(this.store.root);
+      if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('title-existing-root-invalid');
+      await fs.lstat(path.join(this.store.root, 'state.json'));
+    } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    return this.store.state(true);
+  }
+  async prepareExistingCleanup(source = hash('cleanup-only')) {
+    if (this.disposed || this.api.env.remoteName) return false;
+    const state = await this.existingState();
+    if (!state || (!state.enabled && !state.journal && !Object.keys(state.entries).length)) return false;
+    await this.ensureStore(source);
+    return !this.disposed;
+  }
+  async restoreExistingOwnership() {
+    if (this.disposed || this.active || this.api.env.remoteName) return;
+    const state = await this.existingState();
+    if (this.disposed || this.active || this.preference() || !state || (!state.enabled && !state.journal && !Object.keys(state.entries).length)) return;
+    this.active = true;
+    await this.ensureStore(hash('cleanup-only'));
+    await this.publish();
+    await this.enqueue();
   }
 
   preference() { return this.api.workspace.getConfiguration('codexSessionTabs').get(PREF, false) === true; }
@@ -190,12 +216,20 @@ class AutoTitles {
   }
 
   async prepare() {
+    this.sdkMissing = false;
+    if (this.api.env.remoteName) { this.block('Automatic title ownership is unverified in remote windows.'); return null; }
     const support = await this.support();
-    if (support.mode !== 'cursor') { this.setStatus(support.mode === 'native' ? 'native' : 'blocked', support.reason); return null; }
+    if (support.mode !== 'cursor') {
+      this.setStatus(support.mode === 'native' ? 'native' : 'blocked', support.reason);
+      await this.prepareExistingCleanup();
+      return null;
+    }
     if (!this.options.metadata) {
       try { await fs.access(this.runtime.python); }
       catch {
+        this.sdkMissing = true;
         this.block('Codex SDK is not set up. Use Enable Automatic Tab Titles and choose Set up Codex SDK.');
+        await this.prepareExistingCleanup(support.source);
         return null;
       }
     }
@@ -206,10 +240,13 @@ class AutoTitles {
 
   async enable() {
     if (this.disposed) return;
+    await this.restoration;
     this.active = true;
+    this.invalidate();
     let support = await this.prepare();
     if (!support) {
-      if (this.status.reason.includes('not set up')) {
+      if (this.initialized) { await this.publish(); await this.enqueue(); }
+      if (this.sdkMissing) {
         const choice = await this.api.window.showWarningMessage?.('Automatic titles need the Codex Python SDK. Setup is user-invoked and does not replace the official UI.', 'Set up Codex SDK');
         if (choice === 'Set up Codex SDK') {
           await this.api.window.withProgress({ location: this.api.ProgressLocation.Notification, title: 'Setting up Codex SDK for tab titles' }, progress => this.runtime.install(line => progress.report({ message: String(line).trim().slice(-200) })));
@@ -226,6 +263,7 @@ class AutoTitles {
 
   async disable(explicit = true) {
     if (this.disposed || this.api.env.remoteName) { this.block('Disable automatic titles in the local IDE profile; remote settings ownership is unverified.'); return; }
+    await this.restoration;
     const priorActive = this.active, priorControl = this.control;
     this.invalidate();
     this.active = true;
@@ -253,9 +291,11 @@ class AutoTitles {
 
   async refresh() {
     if (this.disposed) return;
+    await this.restoration;
     if (!this.active && !this.preference()) { this.setStatus('off', 'Automatic tab titles are off.'); return; }
     this.active = true;
-    if (!this.initialized && !await this.prepare()) return;
+    if (!this.initialized) await this.prepare();
+    if (!this.initialized) return;
     await this.publish();
     return this.enqueue(true);
   }
@@ -266,7 +306,9 @@ class AutoTitles {
   }
   async refreshScheduled(force) {
     try {
-      if (!this.initialized && !await this.prepare()) return;
+      await this.restoration;
+      if (!this.initialized) await this.prepare();
+      if (!this.initialized) return;
       await this.publish();
       await this.enqueue(force);
     } catch { this.block('Automatic title coordination is unavailable; refresh after checking local storage.', true); }
@@ -317,6 +359,7 @@ class AutoTitles {
       catch (error) {
         if (!['TITLE_WRITE_INVALIDATED', 'TITLE_WRITE_REJECTED'].includes(error.code)) throw error;
         state.enabled = false; state.generation++;
+        state.cleanupBlocked = true;
         state.blocked = 'Label cleanup could not complete. Automatic titles stopped; fix user settings and run Disable Automatic Tab Titles again to retry unchanged owned labels.';
         await this.store.save(state);
         this.block(state.blocked, true);
@@ -324,7 +367,7 @@ class AutoTitles {
       }
     }
     else { state.entries = entries; await this.store.save(state); }
-    state.enabled = false; state.generation++; state.blocked = reason;
+    state.enabled = false; state.generation++; state.blocked = reason; state.cleanupBlocked = false;
     await this.store.save(state);
     if (reason) this.block(reason, true); else this.setStatus('off', 'Automatic titles disabled. The whole-patterns Sync exclusion is retained.');
     return true;
@@ -413,6 +456,7 @@ class AutoTitles {
   }
 
   async cycle(force) {
+    if (this.api.env.remoteName) { this.block('Automatic title ownership is unverified in remote windows.'); return; }
     if (!await this.store.acquire({ recoverPending: async journal => {
       const recovery = this.recovery;
       if (!recovery || recovery.attempted) return false;
@@ -442,23 +486,37 @@ class AutoTitles {
       await this.configUpdate('codexSessionTabs', PREF, false);
       return;
     }
+    if (state.cleanupBlocked) { this.block(state.blocked, true); return; } // Explicit Disable retries a failed cleanup; heartbeats must not loop writes.
     const enabling = controls.some(row => row.source === this.source && row.control.kind === 'enable');
-    if (state.enabled && !enabling && !this.preference()) { await this.cleanup(state, ''); return; }
-    if (state.enabled && state.source !== this.source) {
-      this.block('Another metadata context owns this profile. Disable automatic titles before switching contexts.');
-      await this.store.release();
-      return;
+    // Privacy applies to every owned entry, independent of the current SDK,
+    // metadata source or verified build. Only the sole writer can remove it.
+    if (state.enabled || Object.keys(state.entries).length) {
+      const privacy = this.configuration(true);
+      if (!privacy.ok) { await this.cleanup(state, privacy.reason); return; }
+      if (!enabling && !this.preference()) { await this.cleanup(state, ''); return; }
     }
     if (!state.enabled && !enabling) { this.setStatus(state.blocked ? 'blocked' : 'off', state.blocked || 'Use Enable Automatic Tab Titles to initialize this profile.'); return; }
+    const support = await this.support();
+    if (state.enabled && (state.source !== this.source || support.mode !== 'cursor' || support.source !== this.source)) {
+      const liveOldContext = [...this.store.liveContexts].some(([instance, source]) => instance !== this.store.instance && source === state.source);
+      if (liveOldContext) {
+        this.block('This window uses a different Codex data directory or extension version. Automatic titles remain with the other active context.');
+        await this.store.release();
+      } else await this.cleanup(state, 'The IDE/official metadata context changed. Old-context automatic labels were removed; enable again only after verifying the new context.', state.source);
+      return;
+    }
     if (enabling) {
       for (const row of controls.filter(row => row.source === this.source && row.control.kind === 'enable')) state.controls[row.instance] = row.control.id;
       await this.store.save(state); // One explicit attempt, never a repeating consent token.
     }
-    const support = await this.support();
     if (support.mode !== 'cursor' || support.source !== this.source) { await this.cleanup(state, 'The IDE/official metadata context changed. Automatic title writes stopped.', state.source); return; }
     this.sourceContext = support;
     const privacy = this.configuration(!enabling);
     if (!privacy.ok) { await this.cleanup(state, privacy.reason, state.source); return; }
+    if (!this.options.metadata) {
+      try { await fs.access(this.runtime.python); }
+      catch { this.block('Codex SDK is not set up. Existing labels are retained; privacy cleanup remains active.'); return; }
+    }
     const cachedConflicts = await this.respectUserPatterns(state);
     const ids = [...new Set(requests.filter(row => row.source === this.source).flatMap(row => row.ids))].slice(0, 100);
     const signature = ids.slice().sort().join(',');
@@ -543,6 +601,7 @@ class AutoTitles {
     this.disposed = true;
     this.invalidate();
     clearInterval(this.timer); clearTimeout(this.debounce);
+    await this.restoration;
     await this.running;
     await this.publications;
     if (this.initialized) {

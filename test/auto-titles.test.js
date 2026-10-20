@@ -25,9 +25,76 @@ async function pendingWriter(f) {
 
 test('default-off start performs no setup, metadata, coordination or settings writes', async t => {
   const f = await fixture(t); const a = f.make('a');
+  await a.manager.restoration;
   assert.equal(a.manager.status.kind, 'off');
   assert.equal(a.calls.length, 0); assert.equal(f.shared.writes.length, 0);
   await assert.rejects(fs.stat(a.store.root), { code: 'ENOENT' });
+});
+
+for (const eligibility of ['new-official-version', 'new-codex-home', 'unknown-build', 'native', 'missing-runtime']) for (const override of [false, true]) test(`restart privacy cleanup ignores ${eligibility} eligibility with ${override ? 'folder override' : 'removed exclusion'}`, async t => {
+  const f = await fixture(t); const a = f.make('old', { ids: [A, B] }); await a.manager.enable();
+  await a.manager.dispose();
+  f.shared.edit(PATTERNS, { ...f.shared.values[PATTERNS], [key(B)]: 'User preserved title', '**/src/**': 'User source' });
+  if (override) f.shared.overrides[PATTERNS] = { workspaceFolderValue: { '**/local/*': 'Scoped user label' } };
+  else f.shared.edit('settingsSync.ignoredSettings', []);
+  const support = eligibility === 'unknown-build' || eligibility === 'native' ? async () => ({ mode: eligibility === 'native' ? 'native' : 'blocked', reason: 'Synthetic unsupported build' }) : eligibility === 'missing-runtime' ? undefined : async () => ({ mode: 'cursor', source: eligibility === 'new-official-version' ? 'c'.repeat(64) : 'd'.repeat(64), binary: '/synthetic/new-cli', codexHome: '/synthetic/new-home' });
+  const b = f.make('restart', { support, missingRuntime: eligibility === 'missing-runtime' });
+  let installCalls = 0; b.manager.runtime.install = () => { installCalls++; throw new Error('must not install during cleanup'); };
+  const writes = f.shared.writes.length;
+  await b.manager.refresh(); await b.manager.heartbeat();
+  assert.equal(b.calls.length, 0); assert.equal(installCalls, 0);
+  assert.equal(f.shared.values[PATTERNS][key(A)], undefined);
+  assert.equal(f.shared.values[PATTERNS][key(B)], 'User preserved title');
+  assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
+  assert.equal(f.shared.writes.slice(writes).some(row => row.key === PATTERNS && row.value[key(A)]), false);
+  assert.equal((await b.store.state(true)).enabled, false); assert.equal(b.manager.status.kind, 'blocked');
+  if (override) assert.deepEqual(f.shared.overrides[PATTERNS].workspaceFolderValue, { '**/local/*': 'Scoped user label' });
+  else assert.deepEqual(f.shared.values['settingsSync.ignoredSettings'], []);
+});
+
+test('off restart probes existing ownership read-only then cleans a missing exclusion without enabling metadata', async t => {
+  const f = await fixture(t); const a = f.make('old', { ids: [A, B] }); await a.manager.enable(); await a.manager.dispose();
+  f.shared.edit(PATTERNS, { ...f.shared.values[PATTERNS], [key(B)]: 'User preserved title', '**/src/**': 'User source' });
+  f.shared.edit('codexSessionTabs.autoTitles.enabled', false); f.shared.edit('settingsSync.ignoredSettings', []);
+  const b = f.make('off-restart', { support: async () => ({ mode: 'blocked', reason: 'Unknown synthetic build' }) });
+  await b.manager.restoration;
+  assert.equal(b.calls.length, 0); assert.equal(b.manager.preference(), false);
+  assert.equal(f.shared.values[PATTERNS][key(A)], undefined);
+  assert.equal(f.shared.values[PATTERNS][key(B)], 'User preserved title');
+  assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
+  assert.equal(b.manager.status.kind, 'blocked');
+});
+
+test('healthy context change retires old owned labels only without another live old-context request', async t => {
+  const f = await fixture(t); const a = f.make('old', { ids: [A, B] }); await a.manager.enable(); await a.manager.dispose();
+  f.shared.edit(PATTERNS, { ...f.shared.values[PATTERNS], [key(B)]: 'User preserved title', '**/src/**': 'User source' });
+  const b = f.make('new-context', { support: async () => ({ mode: 'cursor', source: 'd'.repeat(64), binary: '/new/cli', codexHome: '/new/home' }) });
+  await b.manager.refresh();
+  assert.equal(b.calls.length, 0); assert.equal(f.shared.values[PATTERNS][key(A)], undefined);
+  assert.equal(f.shared.values[PATTERNS][key(B)], 'User preserved title'); assert.equal(f.shared.values[PATTERNS]['**/src/**'], 'User source');
+  assert.equal((await b.store.state(true)).enabled, false); assert.equal(b.manager.status.kind, 'blocked');
+  assert.ok(f.shared.values['settingsSync.ignoredSettings'].includes(PATTERNS));
+});
+
+test('healthy live old context is preserved even with an aged request; privacy removal still cleans globally', async t => {
+  const f = await fixture(t); const a = f.make('old'); await a.manager.enable();
+  clearInterval(a.manager.timer); clearTimeout(a.manager.debounce);
+  const requestPath = require('node:path').join('requests', `${a.store.instance}.json`);
+  const request = JSON.parse(await a.store.readText(requestPath)); request.updatedAt -= 60000; await a.store.atomic(requestPath, request);
+  await a.store.release();
+  const b = f.make('different-context', { support: async () => ({ mode: 'cursor', source: 'd'.repeat(64), binary: '/new/cli', codexHome: '/new/home' }) });
+  await b.manager.refresh();
+  assert.equal(f.shared.values[PATTERNS][key(A)], 'Fake Alpha'); assert.equal(b.calls.length, 0); assert.equal(b.store.owned, null);
+  f.shared.edit('settingsSync.ignoredSettings', []); await b.manager.refresh();
+  assert.equal(f.shared.values[PATTERNS][key(A)], undefined); assert.equal(b.calls.length, 0); assert.equal(b.manager.status.kind, 'blocked');
+});
+
+test('remote restart never acquires local ownership or changes persisted labels for privacy cleanup', async t => {
+  const f = await fixture(t); const a = f.make('old'); await a.manager.enable(); await a.manager.dispose();
+  f.shared.edit('settingsSync.ignoredSettings', []); const writes = f.shared.writes.length;
+  const b = f.make('remote', { remoteName: 'ssh-remote' }); await b.manager.refresh();
+  assert.equal(b.manager.initialized, undefined); assert.equal(b.calls.length, 0); assert.equal(f.shared.writes.length, writes);
+  assert.equal(f.shared.values[PATTERNS][key(A)], 'Fake Alpha'); assert.equal(b.manager.status.kind, 'blocked');
 });
 
 test('enable excludes whole patterns before data, preserves unrelated settings and disable retains exclusion', async t => {

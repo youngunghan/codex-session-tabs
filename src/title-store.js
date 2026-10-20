@@ -7,7 +7,7 @@ const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/;
 const KEY = /^\*\*\/local\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_ENTRIES = 250;
-const freshState = () => ({ version: 1, enabled: false, generation: 0, source: null, account: null, entries: {}, controls: {}, blocked: '', journal: null });
+const freshState = () => ({ version: 1, enabled: false, generation: 0, source: null, account: null, entries: {}, controls: {}, blocked: '', cleanupBlocked: false, journal: null });
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 
 function processAlive(pid) {
@@ -79,6 +79,7 @@ class TitleStore {
     catch (error) { if (!required && error.code === 'ENOENT') return freshState(); throw new Error('title-ownership-state-invalid'); }
     if (state.version !== 1 || typeof state.enabled !== 'boolean' || !Number.isSafeInteger(state.generation) || state.generation < 0 || !state.entries || Array.isArray(state.entries) || Object.keys(state.entries).length > MAX_ENTRIES || !state.controls || Array.isArray(state.controls) || Object.keys(state.controls).length > 128 || Object.entries(state.controls).some(([instance, id]) => !ID.test(instance) || !ID.test(id)) || typeof state.blocked !== 'string') throw new Error('title-ownership-state-invalid');
     if ((state.source !== null && !HASH.test(state.source)) || (state.account !== null && !HASH.test(state.account))) throw new Error('title-ownership-context-invalid');
+    if (state.cleanupBlocked !== undefined && typeof state.cleanupBlocked !== 'boolean') throw new Error('title-cleanup-state-invalid');
     const validEntries = entries => entries && typeof entries === 'object' && !Array.isArray(entries) && Object.keys(entries).length <= MAX_ENTRIES && Object.entries(entries).every(([key, row]) => KEY.test(key) && row && typeof row.value === 'string' && row.value.length <= 160 && HASH.test(row.source) && HASH.test(row.account));
     if (!validEntries(state.entries)) throw new Error('title-ownership-entry-invalid');
     if (state.journal !== null && (!state.journal || !ID.test(state.journal.token) || !Number.isSafeInteger(state.journal.generation) || !validEntries(state.journal.intended) || (state.journal.settled !== undefined && typeof state.journal.settled !== 'boolean'))) throw new Error('title-write-journal-invalid');
@@ -154,6 +155,7 @@ class TitleStore {
   async requests() {
     const rows = [];
     this.requestInstances = new Set();
+    this.liveContexts = new Map();
     const names = await fs.readdir(path.join(this.root, 'requests'));
     if (names.length > 128) throw new Error('title-request-capacity-exceeded');
     for (const name of names) {
@@ -168,6 +170,7 @@ class TitleStore {
       }
       this.requestInstances.add(row.instance);
       if (live === null) throw new Error('title-request-liveness-ambiguous');
+      if (live === true) this.liveContexts.set(row.instance, row.source);
       const recent = Date.now() - row.updatedAt >= -1000 && Date.now() - row.updatedAt < 10000;
       if (live === true && recent) rows.push(row);
       // Request absence/expiry never prunes cached pattern ownership.
