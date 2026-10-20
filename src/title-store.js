@@ -79,10 +79,9 @@ class TitleStore {
     catch (error) { if (!required && error.code === 'ENOENT') return freshState(); throw new Error('title-ownership-state-invalid'); }
     if (state.version !== 1 || typeof state.enabled !== 'boolean' || !Number.isSafeInteger(state.generation) || state.generation < 0 || !state.entries || Array.isArray(state.entries) || Object.keys(state.entries).length > MAX_ENTRIES || !state.controls || Array.isArray(state.controls) || Object.keys(state.controls).length > 128 || Object.entries(state.controls).some(([instance, id]) => !ID.test(instance) || !ID.test(id)) || typeof state.blocked !== 'string') throw new Error('title-ownership-state-invalid');
     if ((state.source !== null && !HASH.test(state.source)) || (state.account !== null && !HASH.test(state.account))) throw new Error('title-ownership-context-invalid');
-    for (const [key, row] of Object.entries(state.entries)) {
-      if (!KEY.test(key) || !row || typeof row.value !== 'string' || row.value.length > 160 || !HASH.test(row.source) || !HASH.test(row.account)) throw new Error('title-ownership-entry-invalid');
-    }
-    if (state.journal !== null && (!state.journal || !ID.test(state.journal.token) || !Number.isSafeInteger(state.journal.generation))) throw new Error('title-write-journal-invalid');
+    const validEntries = entries => entries && typeof entries === 'object' && !Array.isArray(entries) && Object.keys(entries).length <= MAX_ENTRIES && Object.entries(entries).every(([key, row]) => KEY.test(key) && row && typeof row.value === 'string' && row.value.length <= 160 && HASH.test(row.source) && HASH.test(row.account));
+    if (!validEntries(state.entries)) throw new Error('title-ownership-entry-invalid');
+    if (state.journal !== null && (!state.journal || !ID.test(state.journal.token) || !Number.isSafeInteger(state.journal.generation) || !validEntries(state.journal.intended) || (state.journal.settled !== undefined && typeof state.journal.settled !== 'boolean'))) throw new Error('title-write-journal-invalid');
     return state;
   }
 
@@ -95,7 +94,7 @@ class TitleStore {
 
   async save(state) { await this.assertOwner(); await this.atomic('state.json', state); }
 
-  async acquire() {
+  async acquire(options = {}) {
     if (this.owned) { await this.assertOwner(); return true; }
     try { await fs.mkdir(this.lock); }
     catch (error) {
@@ -109,7 +108,11 @@ class TitleStore {
       const alive = this.alive(owner.pid);
       if (alive === true) return false;
       if (alive !== false) throw new Error('title-writer-liveness-ambiguous');
-      if ((await this.state(true)).journal) throw new Error('title-dead-writer-pending-write; manual review required');
+      const journal = (await this.state(true)).journal;
+      const unresolved = journal && journal.settled !== true;
+      if (unresolved && (!options.recoverPending || !await options.recoverPending(journal))) {
+        const error = new Error('title-dead-writer-pending-write; full IDE restart recovery required'); error.code = 'TITLE_DEAD_PENDING'; throw error;
+      }
       // A unique claim inside the old directory serializes cooperative reclaim.
       // A crashed reclaimer leaves an ambiguous lock, which is never age-stolen.
       const claim = path.join(this.lock, 'reclaim.claim');
@@ -117,11 +120,15 @@ class TitleStore {
       catch (claimed) { if (claimed.code === 'EEXIST') return false; throw claimed; }
       const latest = await fs.lstat(this.lock);
       if (!same(stat, latest) || latest.isSymbolicLink()) throw new Error('title-lock-replaced-during-reclaim');
-      if (this.alive(owner.pid) !== false || (await this.state(true)).journal) throw new Error('title-reclaim-no-longer-safe');
+      const latestOwner = JSON.parse(await this.readText(path.join('writer.lock', files[0])));
+      const pending = (await this.state(true)).journal;
+      if (latestOwner.token !== owner.token || latestOwner.pid !== owner.pid || this.alive(owner.pid) !== false || (unresolved ? pending?.token !== journal.token : pending && pending.settled !== true)) throw new Error('title-reclaim-no-longer-safe');
       await fs.unlink(path.join(this.lock, files[0]));
       await fs.unlink(claim);
       await fs.rmdir(this.lock);
-      return this.acquire();
+      const acquired = await this.acquire();
+      if (acquired && unresolved) this.recoveredJournal = journal.token;
+      return acquired;
     }
     this.owned = await fs.lstat(this.lock);
     await fs.writeFile(path.join(this.lock, this.ownerName), JSON.stringify({ token: this.token, pid: this.pid }), { flag: 'wx', mode: 0o600 });

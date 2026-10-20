@@ -4,6 +4,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { TitleStore, MAX_ENTRIES, ID, HASH } = require('./title-store');
 const { createSupport, hash } = require('./title-support');
+const { createProcessBoundary } = require('./title-process-boundary');
 
 const PREF = 'autoTitles.enabled';
 const PATTERNS = 'workbench.editor.customLabels.patterns';
@@ -48,6 +49,7 @@ class AutoTitles {
     this.options = options;
     this.support = options.support || createSupport(api, context);
     this.store = options.store || new TitleStore(path.join(context.globalStorageUri.fsPath, 'auto-titles-v1'));
+    this.boundary = options.boundary || createProcessBoundary();
     this.metadata = options.metadata || (request => {
       let reply;
       const operation = runtime.run({ op: 'metadata', ...request }, event => { if (event.kind === 'metadata') reply = event; });
@@ -78,10 +80,10 @@ class AutoTitles {
       if (this.ownWrites && !privacy && (!pref || ownPref)) return; // Readback checks our pattern writes; manual off is never suppressed.
       if (this.ownWrites && privacy && (!pref || ownPref) && !enabled && this.expectedMutation?.full === 'settingsSync.ignoredSettings' && this.configuration(true).ok) return;
       this.invalidate();
-      if (pref && !this.preference() && this.control?.kind !== 'disable') void this.disable().catch(() => this.block('Automatic title disable could not complete; refresh or inspect local ownership storage.'));
-      else if (this.active || this.preference()) { this.active = true; this.schedule(true); }
+      if (pref && !this.preference() && this.control?.kind !== 'disable') void this.disable(false).catch(() => this.block('Automatic title disable could not complete; refresh or inspect local ownership storage.'));
+      else if (this.active || this.preference()) { this.active = true; this.schedule(); }
     }));
-    if (this.api.workspace.onDidChangeWorkspaceFolders) subscriptions.push(this.api.workspace.onDidChangeWorkspaceFolders(() => { this.invalidate(); if (this.active) this.schedule(true); }));
+    if (this.api.workspace.onDidChangeWorkspaceFolders) subscriptions.push(this.api.workspace.onDidChangeWorkspaceFolders(() => { this.invalidate(); if (this.active) this.schedule(); }));
     if (this.preference()) { this.active = true; this.schedule(true); }
     return this;
   }
@@ -147,9 +149,14 @@ class AutoTitles {
     if (this.disposed) return;
     this.source = source;
     if (!this.timer) {
-      this.timer = setInterval(() => { if (!this.disposed && this.active) void this.publish().then(() => this.enqueue()).catch(() => this.block('Local title coordination failed; no new labels will be written.', true)); }, 2000);
+      this.timer = setInterval(() => { void this.heartbeat().catch(() => this.block('Local title coordination failed; no new labels will be written.', true)); }, 2000);
       this.timer.unref?.();
     }
+  }
+  async heartbeat() {
+    if (this.disposed || !this.active) return;
+    await this.publish();
+    await this.enqueue(); // Coordination/privacy/new IDs, never an idle poll.
   }
   publish() {
     if (!this.initialized || !this.source || this.disposed) return Promise.resolve();
@@ -195,14 +202,17 @@ class AutoTitles {
     return this.enqueue(true);
   }
 
-  async disable() {
+  async disable(explicit = true) {
     if (this.disposed || this.api.env.remoteName) { this.block('Disable automatic titles in the local IDE profile; remote settings ownership is unverified.'); return; }
     this.invalidate();
     this.active = true;
     await this.ensureStore(this.source || hash('cleanup-only'));
     this.control = { kind: 'disable', id: randomUUID() };
     await this.publish();
-    return this.enqueue(true);
+    const recovery = explicit ? { attempted: false } : null;
+    this.recovery = recovery;
+    try { return await this.enqueue(true); }
+    finally { if (this.recovery === recovery) this.recovery = null; }
   }
 
   async refresh() {
@@ -234,7 +244,7 @@ class AutoTitles {
         this.queued = false;
         const requested = this.force; this.force = false;
         try { await this.cycle(requested); }
-        catch { this.block('Automatic titles are blocked by ambiguous local ownership or a settings write. Inspect local title storage before retrying.', true); }
+        catch (error) { this.block(error.code === 'TITLE_DEAD_PENDING' ? 'A previous IDE settings write is unresolved. Fully quit the previous IDE and its background processes, relaunch, then run Disable Automatic Tab Titles for recovery.' : 'Automatic titles are blocked by ambiguous local ownership or a settings write. Check user settings and retry Disable Automatic Tab Titles.', true); }
       }
     })().finally(() => { this.running = null; });
     return this.running;
@@ -245,14 +255,15 @@ class AutoTitles {
     let timer;
     try {
       const reply = await Promise.race([this.metadata(request), new Promise((_, reject) => { timer = setTimeout(() => { this.operation?.abort?.(); reject(new Error('metadata-timeout')); }, this.options.timeout || 45000); })]);
-      if (!reply || !HASH.test(reply.identity) || !Array.isArray(reply.threads) || reply.threads.length > 100 || reply.threads.some(row => !ID.test(row.id) || typeof row.title !== 'string' || Array.from(row.title).length > 200)) throw new Error('metadata-invalid');
+      if (!reply || !HASH.test(reply.identity)) { const error = new Error('metadata-identity-unavailable'); error.code = 'METADATA_IDENTITY_UNAVAILABLE'; throw error; }
+      if (!Array.isArray(reply.threads) || reply.threads.length > 100 || reply.threads.some(row => !ID.test(row.id) || typeof row.title !== 'string' || Array.from(row.title).length > 200)) throw new Error('metadata-invalid');
       return reply;
     } finally { clearTimeout(timer); }
   }
 
   async cleanup(state, reason, source = null) {
     await this.store.assertOwner();
-    if (state.journal) { this.block('An earlier title settings write has an unknown outcome. Review local title storage/settings; automatic cleanup cannot safely continue.', true); return false; }
+    if (state.journal && !await this.reconcileJournal(state)) return false;
     const inspection = this.api.workspace.getConfiguration('workbench.editor.customLabels').inspect('patterns');
     if (!inspection || !inspection.globalValue || typeof inspection.globalValue !== 'object' || Array.isArray(inspection.globalValue)) {
       if (inspection?.globalValue !== undefined) throw new Error('cleanup-patterns-invalid');
@@ -268,9 +279,9 @@ class AutoTitles {
     if (changed) {
       try { await this.writePatterns(state, patterns, entries, false, basePatterns); }
       catch (error) {
-        if (error.code !== 'TITLE_WRITE_INVALIDATED') throw error;
+        if (!['TITLE_WRITE_INVALIDATED', 'TITLE_WRITE_REJECTED'].includes(error.code)) throw error;
         state.enabled = false; state.generation++;
-        state.blocked = 'User label settings changed during cleanup. Automatic titles stopped; run Disable Automatic Tab Titles again to retry unchanged owned labels.';
+        state.blocked = 'Label cleanup could not complete. Automatic titles stopped; fix user settings and run Disable Automatic Tab Titles again to retry unchanged owned labels.';
         await this.store.save(state);
         this.block(state.blocked, true);
         return false;
@@ -281,6 +292,47 @@ class AutoTitles {
     await this.store.save(state);
     if (reason) this.block(reason, true); else this.setStatus('off', 'Automatic titles disabled. The whole-patterns Sync exclusion is retained.');
     return true;
+  }
+
+  async reconcileJournal(state) {
+    if (!state.journal) return true;
+    if (state.journal.settled !== true && this.settledJournal !== state.journal.token && this.store.recoveredJournal !== state.journal.token) {
+      this.block('A previous IDE settings write may still be queued. Fully exit the previous IDE, relaunch, then run Disable Automatic Tab Titles for recovery.', true);
+      return false;
+    }
+    await this.store.assertOwner();
+    const inspection = this.api.workspace.getConfiguration('workbench.editor.customLabels').inspect('patterns');
+    const actual = inspection?.globalValue || {};
+    if (!inspection || typeof actual !== 'object' || Array.isArray(actual)) throw new Error('title-reconcile-patterns-invalid');
+    const candidates = new Set([...Object.keys(state.entries), ...Object.keys(state.journal.intended)]);
+    const reconciled = {};
+    for (const key of candidates) {
+      const intended = state.journal.intended[key], prior = state.entries[key];
+      if (intended && actual[key] === intended.value) reconciled[key] = intended;
+      else if (prior && actual[key] === prior.value) reconciled[key] = prior;
+    }
+    state.entries = reconciled;
+    state.journal = null;
+    await this.store.save(state);
+    this.settledJournal = null;
+    this.store.recoveredJournal = null;
+    return true;
+  }
+
+  async respectUserPatterns(state) {
+    const base = this.api.workspace.getConfiguration('workbench.editor.customLabels').inspect('patterns')?.globalValue || {};
+    const patterns = clone(base), entries = { ...state.entries };
+    let conflicts = false;
+    for (const [key, row] of Object.entries(entries)) {
+      if (patterns[key] !== row.value) { delete entries[key]; continue; }
+      const id = key.slice('**/local/'.length);
+      if (Object.keys(patterns).some(pattern => pattern !== key && !state.entries[pattern] && mayMatch(pattern, id))) {
+        delete patterns[key]; delete entries[key]; conflicts = true;
+      }
+    }
+    if (JSON.stringify(patterns) !== JSON.stringify(base)) await this.writePatterns(state, patterns, entries, false, base);
+    else if (JSON.stringify(entries) !== JSON.stringify(state.entries)) { state.entries = entries; await this.store.save(state); }
+    return conflicts;
   }
 
   async writePatterns(state, patterns, entries, additions, basePatterns, epoch) {
@@ -294,7 +346,9 @@ class AutoTitles {
       const latest = this.configuration(true);
       if (!latest.ok) throw new Error('title-write-exclusion-changed');
     }
-    state.journal = { token: randomUUID(), generation: state.generation, intended: entries };
+    const boundary = await this.boundary.capture();
+    this.lastBoundary = boundary;
+    state.journal = { token: randomUUID(), generation: state.generation, intended: entries, boundary };
     await this.store.save(state);
     // Finish all filesystem awaits before taking the final configuration
     // snapshot. This covers cleanup too: a manual edit must never be replaced
@@ -309,22 +363,36 @@ class AutoTitles {
       error.code = 'TITLE_WRITE_INVALIDATED';
       throw error;
     }
-    await this.configUpdate('workbench.editor.customLabels', 'patterns', patterns);
-    const actual = this.api.workspace.getConfiguration('workbench.editor.customLabels').inspect('patterns')?.globalValue || {};
-    state.entries = Object.fromEntries(Object.entries(entries).filter(([key, row]) => actual[key] === row.value));
-    state.journal = null;
+    let rejected = false;
+    try { await this.configUpdate('workbench.editor.customLabels', 'patterns', patterns); }
+    catch { rejected = true; }
+    // Resolution OR rejection is the completion boundary for this exact API
+    // operation. Persist that fact before readback; a crash before this marker
+    // remains ambiguous and cannot be reclaimed automatically.
+    this.settledJournal = state.journal.token;
+    state.journal.settled = true;
     await this.store.save(state);
+    await this.reconcileJournal(state);
+    if (rejected) { const error = new Error('title-settings-update-rejected'); error.code = 'TITLE_WRITE_REJECTED'; throw error; }
   }
 
   async cycle(force) {
-    if (!await this.store.acquire()) {
+    if (!await this.store.acquire({ recoverPending: async journal => {
+      if (!this.recovery || this.recovery.attempted) return false;
+      this.recovery.attempted = true;
+      try {
+        if (!await this.boundary.exited(journal.boundary)) return false;
+        const choice = await this.api.window.showWarningMessage?.('A previous IDE settings write has an unknown outcome. Recover only after fully quitting every previous instance of this IDE, including background processes, and relaunching. Reloading or closing one window is insufficient. Confirm all old processes exited; surviving processes could still write settings.', { modal: true }, 'Previous IDE fully exited');
+        return choice === 'Previous IDE fully exited' && await this.boundary.exited(journal.boundary);
+      } catch { return false; }
+    } })) {
       const state = await this.store.state(true);
       if (state.enabled && state.source !== this.source) { this.block('This window uses a different Codex data directory or extension version. Automatic titles are paused here.'); return; }
       this.setStatus(state.blocked ? 'blocked' : state.enabled ? 'following' : 'off', state.blocked || 'Another window keeps tab titles up to date for this IDE profile.');
       return;
     }
     let state = await this.store.state(true);
-    if (state.journal) { this.block('Pending title settings write from an earlier operation; manual ownership review is required.', true); return; }
+    if (state.journal && !await this.reconcileJournal(state)) return;
     let requests = await this.store.requests();
     for (const instance of Object.keys(state.controls)) if (!this.store.requestInstances.has(instance)) delete state.controls[instance];
     const controls = requests.filter(row => row.control && !handled(state, row));
@@ -352,16 +420,9 @@ class AutoTitles {
     this.sourceContext = support;
     const privacy = this.configuration(!enabling);
     if (!privacy.ok) { await this.cleanup(state, privacy.reason, state.source); return; }
+    const cachedConflicts = await this.respectUserPatterns(state);
     const ids = [...new Set(requests.filter(row => row.source === this.source).flatMap(row => row.ids))].slice(0, 100);
     const signature = ids.slice().sort().join(',');
-    if (!force && !enabling && signature === this.lastSignature && Date.now() - this.lastMetadata < 30000) return;
-    const epoch = this.epoch;
-    let reply;
-    try { reply = await this.fetchMetadata(ids); }
-    catch { if (!this.disposed && this.epoch === epoch) await this.cleanup(state, 'Automatic title metadata is unavailable. Check SDK setup/account/official CLI and enable again.', state.source); return; }
-    if (this.disposed || this.epoch !== epoch) return;
-    requests = await this.store.requests();
-    if (requests.some(row => row.control?.kind === 'disable' && !handled(state, row))) { this.queued = true; return; }
     if (enabling) {
       const current = this.configuration(false);
       if (!current.ok) { await this.cleanup(state, current.reason, state.source); return; }
@@ -373,6 +434,30 @@ class AutoTitles {
       await this.store.save(state);
       await this.configUpdate('codexSessionTabs', PREF, true);
     }
+    if (!ids.length) { this.lastSignature = signature; this.setStatus('ready', 'Automatic titles are enabled. Open a saved official tab to discover its title.'); return; }
+    if (!force && !enabling && signature === this.lastSignature) {
+      if (state.blocked) this.block(state.blocked);
+      else if (cachedConflicts) this.setStatus('limited', 'User label patterns were preserved; overlapping automatic labels were removed.');
+      return;
+    }
+    this.lastSignature = signature; // An idle heartbeat never retries failures.
+    const epoch = this.epoch;
+    let reply;
+    try { reply = await this.fetchMetadata(ids); }
+    catch (error) {
+      if (!this.disposed && this.epoch === epoch) {
+        if (error.code === 'METADATA_IDENTITY_UNAVAILABLE') await this.cleanup(state, 'The Codex account identity is unavailable or changed. Automatic titles stopped; check the account and enable again.', state.source);
+        else {
+          state.blocked = 'Title metadata is temporarily unavailable. Existing labels are retained; check SDK/account/CLI and run Refresh Tab Titles to retry.';
+          await this.store.save(state); this.block(state.blocked, true);
+        }
+      }
+      return;
+    }
+    if (this.disposed || this.epoch !== epoch) return;
+    requests = await this.store.requests();
+    if (requests.some(row => row.control?.kind === 'disable' && !handled(state, row))) { this.queued = true; return; }
+    state.blocked = '';
     if (!this.configuration(true).ok || this.epoch !== epoch) { this.queued = true; return; }
     const current = this.configuration(true);
     const patterns = { ...current.patterns };
@@ -409,7 +494,7 @@ class AutoTitles {
         return;
       }
     } else { state.entries = entries; await this.store.save(state); }
-    this.lastSignature = signature; this.lastMetadata = Date.now();
+    this.lastSignature = signature;
     this.setStatus(conflicts ? 'limited' : 'ready', conflicts ? 'User patterns or cache capacity prevented some labels; those values were preserved.' : 'Automatic titles are active. Discovery is bounded; unknown tabs retain native labels.');
   }
 

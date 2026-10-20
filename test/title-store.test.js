@@ -34,6 +34,17 @@ test('dead writer with pending configuration journal is never reclaimed', async 
   await assert.rejects(b.acquire(), /pending-write/); await assert.rejects(a.release(), /pending-write/);
 });
 
+test('a durably settled journal permits dead-writer takeover but stays journaled until exact reconciliation', async t => {
+  const f = await fixture(t); const root = path.join(f.root, 'store');
+  const a = new TitleStore(root, { pid: 60001 }); await a.init(); await a.acquire();
+  const state = await a.state(true); state.journal = { token: randomUUID(), generation: 0, intended: {}, settled: true }; await a.save(state);
+  const b = new TitleStore(root, { pid: 60002, alive: () => false }); await b.init();
+  assert.equal(await b.acquire(), true); assert.equal((await b.state(true)).journal.settled, true);
+  await assert.rejects(a.release(), /ownership|token/);
+  await assert.rejects(b.release(), /pending-write/);
+  const reconciled = await b.state(true); reconciled.journal = null; await b.save(reconciled); await b.release();
+});
+
 test('age alone never steals missing-bootstrap or ambiguous-liveness locks', async t => {
   const f = await fixture(t); const root = path.join(f.root, 'store'); const a = new TitleStore(root); await a.init();
   await fs.mkdir(a.lock); await fs.utimes(a.lock, 1, 1);

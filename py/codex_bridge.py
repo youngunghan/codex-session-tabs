@@ -26,6 +26,10 @@ MAX_TEXT_CHUNK = 4_096
 MAX_JSON_CHUNK_BYTES = 64 * 1_024
 
 
+class MetadataIdentityError(ValueError):
+    """Fixed public classification; never expose account response values."""
+
+
 def abort_on_parent_eof(platform: str | None = None, run_command: Any = subprocess.run,
                         exit_process: Any = os._exit) -> None:
     """Stop SDK descendants if the extension host disappears mid-turn."""
@@ -292,7 +296,7 @@ async def metadata(request: dict[str, Any]) -> None:
         account = response.account.root if response.account else None
         email = getattr(account, "email", None)
         if getattr(account, "type", None) != "chatgpt" or not isinstance(email, str) or not email.strip():
-            raise ValueError("Missing supported account identity")
+            raise MetadataIdentityError("Missing supported account identity")
         return hmac.new(bytes.fromhex(salt), ("chatgpt\0" + email.strip().casefold()).encode(), hashlib.sha256).hexdigest()
     env = dict(os.environ)
     env["CODEX_HOME"] = home
@@ -316,7 +320,7 @@ async def metadata(request: dict[str, Any]) -> None:
             if not cursor or wanted.issubset(found):
                 break
         if identity(await codex.account(refresh_token=False)) != first:
-            raise ValueError("Account changed during metadata request")
+            raise MetadataIdentityError("Account changed during metadata request")
     emit("metadata", identity=first, threads=[{"id": key, "title": value} for key, value in found.items()], discoveryComplete=not bool(cursor), sdkVersion=sdk_version)
 
 
@@ -361,7 +365,8 @@ async def main() -> None:
         await run(request)
     except Exception as error:
         if request.get("op") == "metadata":
-            emit("error", code="METADATA_UNAVAILABLE", message="Automatic title metadata unavailable. Check SDK setup, supported account, and official CLI compatibility.")
+            code = "METADATA_IDENTITY_UNAVAILABLE" if isinstance(error, MetadataIdentityError) else "METADATA_UNAVAILABLE"
+            emit("error", code=code, message="Automatic title metadata unavailable. Check SDK setup, supported account, and official CLI compatibility.")
             sys.exit(1)
         message = str(error) or type(error).__name__
         lower = message.lower()

@@ -84,7 +84,7 @@ for stage in ['init','account','identity','list','validation']:
     bridge.emit=lambda kind,**fields:events.append(dict(kind=kind,**fields))
     try: asyncio.run(bridge.main()); raise AssertionError('expected failure')
     except SystemExit as error: assert error.code==1
-    assert len(events)==1 and events[0]['code']=='METADATA_UNAVAILABLE',events
+    assert len(events)==1 and events[0]['code']==('METADATA_IDENTITY_UNAVAILABLE' if stage=='identity' else 'METADATA_UNAVAILABLE'),events
     assert seen=={'init':['init'],'account':['init','account'],'identity':['init','account'],'list':['init','account','list'],'validation':[]}[stage],(stage,seen)
     assert secret not in json.dumps(events) and 'private@example' not in json.dumps(events)
 print('redacted_failure_stages=5')
@@ -115,6 +115,7 @@ test('metadata terminal framing is distinct and runtime error events/stderr rema
   const errors = []; await assert.rejects(runtime([{ kind: 'error', message: secret }]).run({ op: 'metadata' }, event => errors.push(event)).promise, error => !error.message.includes(secret));
   assert.equal(JSON.stringify(errors).includes(secret), false);
   await assert.rejects(runtime([], secret).run({ op: 'metadata' }, () => {}).promise, error => !error.message.includes(secret));
+  await assert.rejects(runtime([{ kind: 'error', code: 'METADATA_IDENTITY_UNAVAILABLE', message: secret }]).run({ op: 'metadata' }, () => {}).promise, { code: 'METADATA_IDENTITY_UNAVAILABLE' });
   await assert.rejects(runtime([{ kind: 'completed' }]).run({ op: 'metadata' }, () => {}).promise, /metadata unavailable/);
   assert.equal(validateMessage({ type: 'metadata', salt: 'anything' }), undefined, 'webviews cannot invoke internal metadata request');
 });

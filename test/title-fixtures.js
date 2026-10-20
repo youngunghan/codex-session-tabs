@@ -68,7 +68,8 @@ async function fixture(t) {
     const metadata = options.metadata || (async request => { calls.push(request.ids); return { identity: ACCOUNT, threads: request.ids.map(id => ({ id, title: id === A ? 'Fake Alpha' : 'Fake Beta' })) }; });
     const support = options.support || (async () => ({ mode: 'cursor', source: SOURCE, binary: '/synthetic/cli', codexHome: '/synthetic/home' }));
     const store = new TitleStore(path.join(root, 'auto-titles-v1'), options.storeOptions);
-    const manager = new AutoTitles(context, api, { python: '/not-installed', run() { throw new Error('must not use live SDK'); } }, { metadata, support, store, timeout: options.timeout });
+    const boundary = options.boundary || { capture: async () => ({ pid: 50001, ticks: '639281000000000000', executable: 'c:\\synthetic\\cursor.exe' }), exited: async () => false };
+    const manager = new AutoTitles(context, api, { python: '/not-installed', run() { throw new Error('must not use live SDK'); } }, { metadata, support, store, boundary, timeout: options.timeout });
     if (options.start !== false) manager.start();
     managers.push(manager);
     return { manager, api, context, store, tabs, calls, warnings };

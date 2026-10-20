@@ -177,8 +177,12 @@ class SdkRuntime {
               stopTimer = undefined;
             }
             if (terminalCount > 1) throw new Error('Multiple Codex SDK terminal events');
-            if (event.kind === 'error') eventError = new Error(request.op === 'metadata' ? 'Automatic-title metadata unavailable.' : event.message);
-            onEvent(request.op === 'metadata' && event.kind === 'error' ? { requestId, kind: 'error', code: 'METADATA_UNAVAILABLE', message: 'Automatic-title metadata unavailable.' } : event);
+            const metadataCode = event.code === 'METADATA_IDENTITY_UNAVAILABLE' ? event.code : 'METADATA_UNAVAILABLE';
+            if (event.kind === 'error') {
+              eventError = new Error(request.op === 'metadata' ? 'Automatic-title metadata unavailable.' : event.message);
+              if (request.op === 'metadata') eventError.code = metadataCode;
+            }
+            onEvent(request.op === 'metadata' && event.kind === 'error' ? { requestId, kind: 'error', code: metadataCode, message: 'Automatic-title metadata unavailable.' } : event);
           } catch (error) {
             eventError = error;
             hardAbort();
@@ -210,7 +214,11 @@ class SdkRuntime {
     });
     child.stdin.write(`${JSON.stringify({ ...request, requestId })}\n`);
     return {
-      promise: request.op === 'metadata' ? promise.catch(() => { throw new Error('Automatic-title metadata unavailable. Check SDK setup, account, and official CLI compatibility.'); }) : promise,
+      promise: request.op === 'metadata' ? promise.catch(failure => {
+        const error = new Error('Automatic-title metadata unavailable. Check SDK setup, account, and official CLI compatibility.');
+        error.code = failure.code === 'METADATA_IDENTITY_UNAVAILABLE' ? failure.code : 'METADATA_UNAVAILABLE';
+        throw error;
+      }) : promise,
       stop() {
         if (closed || terminalCount > 0) return;
         if (!turnSeen) { hardAbort(); return; }

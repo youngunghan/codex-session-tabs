@@ -18,6 +18,13 @@ exports.run = async () => {
     const root = process.env.TITLE_SOURCE_ROOT;
     const { AutoTitles, PATTERNS } = require(path.join(root, 'src/auto-titles'));
     const { createSupport } = require(path.join(root, 'src/title-support'));
+    const { readSnapshot, identity, owningMain } = require(path.join(root, 'src/title-process-boundary'));
+    const snapshot = await readSnapshot();
+    const self = identity(snapshot.current), parent = identity(snapshot.parent);
+    report.processBoundaryFacts = { expectedIdeExecutable: /[\\/](?:cursor|code)\.exe$/i.test(process.execPath), selfPidMatches: self.pid === process.pid, selfExeMatches: self.executable === process.execPath.toLowerCase(), directParentPidMatches: snapshot.current.parent === parent.pid, directParentExeMatches: parent.executable === self.executable, parentMainRoleVerified: snapshot.parent.mainRole === true, creationOrderValid: BigInt(parent.ticks) <= BigInt(self.ticks) };
+    report.processBoundaryRoleFacts = snapshot.parent.roleFacts;
+    report.directOwningMainCaptured = Boolean(owningMain(snapshot, process.execPath, process.pid));
+    assert.equal(report.directOwningMainCaptured, true);
     provider = vscode.window.registerCustomEditorProvider('chatgpt.conversationEditor', {
       openCustomDocument: uri => ({ uri, dispose() {} }),
       resolveCustomEditor(document, panel) {
@@ -47,6 +54,8 @@ exports.run = async () => {
       report.inactiveLabelMatchesFakeMetadata = tabs().some(tab => !tab.isActive && tab.label === 'FAKE metadata Alpha');
       assert.equal(report.inactiveLabelMatchesFakeMetadata, true);
       report.exclusionVerified = manager.configuration(true).ok;
+      report.journalUsedVerifiedMain = Boolean(manager.lastBoundary);
+      assert.equal(report.journalUsedVerifiedMain, true);
       assert.equal(report.exclusionVerified, true);
       assert.equal(labels().inspect('patterns').globalValue['**/unrelated-source/**'], 'FAKE user pattern');
       await vscode.workspace.getConfiguration('settingsSync').update('ignoredSettings', [], vscode.ConfigurationTarget.Global);
